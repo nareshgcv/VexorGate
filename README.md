@@ -1,6 +1,6 @@
 # VexorGate
 
-**Does your AI agent's safety gate actually stop risky actions?** agent-gate measures it, and shows a gate design that holds up under attack.
+**Does your AI agent's safety gate actually stop risky actions?** VexorGate measures it, and shows a gate design that holds up under attack.
 
 An *VexorGate* is the check that runs before an AI agent executes a tool call (sending an email, moving money, changing permissions, running a shell command) and decides **allow**, **ask** (escalate to a human) or **block**. Many teams use a small decision model for this. agent-gate tests such gates on realistic tool calls and adversarial inputs, and reports how often a risky action gets through (*fail-open*) and how often legitimate work gets stopped (*false alarms*).
 
