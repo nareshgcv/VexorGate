@@ -1,1 +1,0 @@
-{"backend": "hf", "load_s": 18.1, "gpu_mem_mb": 6195, "p50_one_ms": 46.2, "p90_one_ms": 47.1, "p50_three_ms": 64.1, "accuracy": "28/30"}
