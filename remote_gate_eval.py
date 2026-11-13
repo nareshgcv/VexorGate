@@ -46,9 +46,9 @@ def main():
         summary[mode] = ok
         print(f"== {a.model} / {mode}: {ok}/{len(cases)} correct")
         print("   misses:", ", ".join(misses) or "none")
-    os.makedirs("/kaggle/working/results", exist_ok=True)
+    os.makedirs("Vexorgate/results", exist_ok=True)
     name = a.model.replace("/", "_").replace("~", "")
-    json.dump(summary, open(f"/kaggle/working/results/remote_{name}.json", "w"))
+    json.dump(summary, open(f"/VexorGate/results/remote_{name}.json", "w"))
 
 
 if __name__ == "__main__":
