@@ -87,7 +87,7 @@ Three of the attacks (option rewrites) do not apply to AlignmentCheck, which has
 Requirements: Python 3.10+ and access to a `/systemone` decision endpoint (hosted d1 or Jev via OpenRouter, llama.cpp, or a local runtime).
 
 ```bash
-git clone <this repo>
+git clone https://github.com/nareshgcv/VexorGate.git
 cd VexorGate
 
 export S1_URL=https://openrouter.ai/api/v1/systemone
