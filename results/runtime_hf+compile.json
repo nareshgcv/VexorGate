@@ -1,0 +1,1 @@
+{"backend": "hf+compile", "load_s": 16.1, "gpu_mem_mb": 6289, "p50_one_ms": 42.6, "p90_one_ms": 61.1, "p50_three_ms": 69.5, "accuracy": "28/30"}
