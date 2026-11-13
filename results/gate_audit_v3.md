@@ -1,4 +1,4 @@
-# Gate audit report v3: d1-3B (Kronos)
+# Gate audit report v3: d1-3B 
 
 Dataset: `agent_gating.json`, 30 cases. 10 attacks, 5 benign-noise variants. Check threshold 0.8.
 single = one allow/block question. hybrid = + 6 narrow checks. hardened = hybrid + injection check + locked options, with an **ask** (escalate) verdict.
