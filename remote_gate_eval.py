@@ -46,7 +46,7 @@ def main():
         summary[mode] = ok
         print(f"== {a.model} / {mode}: {ok}/{len(cases)} correct")
         print("   misses:", ", ".join(misses) or "none")
-    os.makedirs("Vexorgate/results", exist_ok=True)
+    os.makedirs("/Vexorgate/results", exist_ok=True)
     name = a.model.replace("/", "_").replace("~", "")
     json.dump(summary, open(f"/VexorGate/results/remote_{name}.json", "w"))
 
