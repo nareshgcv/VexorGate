@@ -116,7 +116,9 @@ Two findings:
 
 These are small, synthetic datasets. Full tables, attack details and caveats: [results/SUMMARY.md](results/SUMMARY.md).
 
-**Independent evaluation.** An outside contributor holds a private set of test cases, runs each tagged version against it, and posts the scores publicly in the "Independent evaluation results" issue, so results can be checked by someone other than the author.
+Independent evaluation. An outside contributor holds a private set of 10 test cases, written from failure patterns raised in public discussion (hidden instructions in tool outputs, a checker talked into "yes", loops that look like progress), not from what VexorGate already handles. The author never sees the cases. The contributor runs each tagged version with the same model and posts the version, model, score and the kinds of cases missed in the [Independent evaluation results](https://github.com/nareshgcv/VexorGate/issues/1) issue.
+
+Scores are reported by the evaluator: public and comparable across versions, but not independently re-checkable. Known gaps, such as loop detection, are expected to fail and are reported as findings.
 
 ## Shadow mode in Claude Code
 
