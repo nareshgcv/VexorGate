@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
-
+from pathlib import Path
 from vexorgate import claude_hook, config
 from vexorgate.__main__ import main as cli
 from vexorgate.facts import Ledger, action_facts, check_rules, request_facts
@@ -121,7 +121,7 @@ class RuleTests(unittest.TestCase):
 
     def test_no_false_alarms_on_safe_benchmark_cases(self):
         for name in ("dev_fresh.jsonl", "agent_gating_v2.jsonl"):
-            for line in open(os.path.join(ROOT, "benchmarks", name), encoding="utf-8"):
+            for line in Path(ROOT, "benchmarks", name).read_text(encoding="utf-8").splitlines():
                 c = json.loads(line)
                 if c["gold"] != "allow":
                     continue
