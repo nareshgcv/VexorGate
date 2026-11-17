@@ -58,6 +58,8 @@ def build(days=7, top=15, rows=None, title=None):
         out.append(f"- {label}**{r['decision']}** ({', '.join(r.get('reasons', []))}){where}")
         out.append(f"  - asked: {r.get('request', '')[:150]}")
         out.append(f"  - action: {r.get('action', '')[:200]}")
+        if r.get("gap"):
+            out.append(f"  - gap: {r['gap']}")
     if not flagged:
         out.append("- nothing")
     errors = [r for r in checked if r["decision"] == "error"]

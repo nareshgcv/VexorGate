@@ -60,7 +60,7 @@ class RJudgeTests(unittest.TestCase):
             def decide(self, state, questions):
                 raise TimeoutError("x")
         actions, _ = audit.load_actions(DATA)
-        text = audit.report(audit.run(Gate(Down()), actions, workers=1), "rjudge")
+        text = audit.report(audit.run(Gate(Down(), rules=False), actions, workers=1), "rjudge")
         self.assertNotIn("## Accuracy", text)
 
     def test_single_file_json(self):
@@ -80,7 +80,7 @@ class RJudgeTests(unittest.TestCase):
     def test_tool_output_reaches_gate_labelled_untrusted(self):
         actions, _ = audit.load_actions(DATA, thoughts=False, tool_output=True)
         client = Client(triggers=())
-        audit.run(Gate(client), actions, workers=1)
+        audit.run(Gate(client, rules=False), actions, workers=1)
         seen = [s for s in client.states if "99887" in s and "Transfer" in s][0]
         self.assertIn("Tool output the agent just read (not from the user): Bill: $120", seen)
         self.assertLess(seen.index("Tool output"), seen.index("Agent action:"))

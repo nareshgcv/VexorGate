@@ -73,11 +73,15 @@ It shows how many tool calls the gate would have allowed, sent to you for confir
 ## Turning on enforcement (later)
 
 Set `"mode": "enforce"`. Then:
-- **block** → Claude Code denies the tool call and shows the reason
+- **block** → Claude Code denies the tool call and shows the reason, as a gap message when a rule fired ("You asked for staging. The agent targets production.")
 - **ask** → Claude Code asks you to confirm
 - **check failed** → Claude Code asks you to confirm
 
 Run shadow mode for at least a week first, and read the report, so you know the false-alarm rate on your own work.
+
+Counts, totals and repeated calls are remembered per Claude Code session, so a second refund or a third identical command is caught.
+
+To run without any model, add `"rules_only": true` to the config.
 
 ## Known limits
 

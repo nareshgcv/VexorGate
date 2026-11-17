@@ -208,9 +208,12 @@ def run(gate, actions, workers=4, skip_tools=()):
         if a["tool"] in skip_tools:
             rec["decision"] = "skipped"
             return rec
-        v = gate.check(a["request"], a["tool"], a["input"], action_text=a["action_text"], context=a.get("context"))
+        v = gate.check(a["request"], a["tool"], a["input"], action_text=a["action_text"], context=a.get("context"),
+                       session=a.get("case_id") or a["session"])
         rec.update({"decision": v.decision, "reasons": v.reasons, "scores": v.scores,
                     "latency_ms": round(v.latency_ms, 1), "cost": v.cost})
+        if v.gap:
+            rec["gap"] = v.gap
         return rec
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:

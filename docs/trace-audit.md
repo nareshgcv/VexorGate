@@ -66,7 +66,9 @@ vexorgate audit traces.jsonl --out report.md --results results.jsonl
 - `report.md`: how many calls would have been allowed, sent to a human, or blocked; the reasons; every flagged action next to the user's request; accuracy if you added labels
 - `results.jsonl`: one line per tool call with the decision and all scores, for your own analysis
 
-Options: `--limit 100` to try a sample first, `--workers 8` for more parallel requests.
+Options: `--limit 100` to try a sample first, `--workers 8` for more parallel requests, `--rules-only` to run the hard-fact rules without any model, `--no-rules` to run the model alone.
+
+Flagged actions show a **gap** line when a rule fired, for example "You asked for staging. The agent targets production." Counts and totals are tracked per session (or per conversation for multi-step records), so a second refund for a one-refund request is caught even when each call looks fine on its own.
 
 ## What gets sent
 

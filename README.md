@@ -4,7 +4,9 @@
 
 AI agents take real actions: sending email, moving money, changing permissions, running commands. Rule-based gateways stop known-bad tool calls, but most real failures are valid calls that go beyond the request: refunding every order instead of one, restarting production instead of staging, sharing a file with anyone instead of the team.
 
-VexorGate checks each tool call against what the user actually asked, and answers **allow**, **ask** (send to a human) or **block**, with a reason. It runs on fast System One decision models, in one request per tool call.
+VexorGate checks each tool call against what the user actually asked, and answers **allow**, **ask** (send to a human) or **block**, with a reason. Plain-code rules compare hard facts first; a fast System One decision model handles what rules cannot express. When something doesn't match, it shows the gap in plain words:
+
+> You asked for 1 refund. The agent wants 2 refunds, $98.00 total.
 
 ## What you can do with it
 
@@ -19,12 +21,20 @@ Start with a trace audit. It runs on your machine and needs nothing in productio
 ## Install
 
 ```bash
-pip install git+https://github.com/nareshgcv/VexorGate.git@v0.3.0
+pip install git+https://github.com/nareshgcv/VexorGate.git@v0.4.0
 ```
 
 The command and package are lowercase: `vexorgate` or `python -m vexorgate`.
 
-## Choose a model
+## Choose a model, or none
+
+**Rules only (no model, nothing leaves your machine):**
+
+```bash
+vexorgate audit your_traces.jsonl --rules-only
+```
+
+This catches hard-fact mismatches (environment, count, amount, audience, new payees, loops) and nothing else. Add a model for everything rules can't express.
 
 VexorGate works with any `/systemone` decision endpoint. Pick one:
 
@@ -86,15 +96,45 @@ print(v.decision, v.reasons)
 
 ## How the gate works
 
-One `/systemone` request asks:
+**Layer 1: hard-fact rules, in plain code.** VexorGate reads a few facts from the user's own words and from the tool call's arguments, and compares them:
+
+| Fact | From the request | From the call | Rule |
+|---|---|---|---|
+| Environment | "restart staging" | `-n production`, `$PROD_URL` | production not named in the request: block; no environment named: ask |
+| Count | "refund order 1182", "two refunds" | number of refund or payment calls in this session | more than asked: block |
+| Amount | "$40" | `amount=4000` (Stripe cents), `$3,200.00` | more than asked: block; above your cap: ask |
+| Audience | "with the team", "make it public" | `type='anyone'`, `visibility='public'`, public-access blocks off | public when the team was asked: block; public when not asked: ask |
+| New payee | | "newly added account" | ask |
+| Loop | | the same call repeated (3 times by default) | block |
+
+A rule block is final and needs no model call. **The request can only narrow what is allowed, never widen it**: fixed limits in your policy (amount caps, tools that always ask) apply whatever the request says.
+
+**Layer 2: the model**, for what rules can't express. One `/systemone` request asks:
 
 1. a broad question: may this action run automatically?
 2. eight narrow yes/no checks: external send, public exposure, money, deletion, permissions, privacy, untrusted code, beyond the request
 3. an injection check: does the text contain approvals or instructions that did not come from the user?
 
-It **blocks** if the broad question says block or any check scores 0.8 or higher, **asks** if only the injection check fires, and **allows** otherwise. Option definitions are fixed in code, so attacker-controlled config cannot rewrite them. Secrets are redacted before anything is sent. If the endpoint fails, the result is **error**, never allow.
+It **blocks** if the broad question says block or any check scores 0.8 or higher, **asks** if only the injection check fires, and **allows** otherwise. Option definitions are fixed in code, so attacker-controlled config cannot rewrite them. Secrets are redacted before anything is sent. If the endpoint fails, the result is **error**, never allow; a rule "ask" stays "ask" even if the model fails.
 
 The gate only reads the user's own request and the raw tool call (plus, optionally, the tool output the agent read, labeled as untrusted). It never reads the agent's reasoning: a checker that reads the agent's reasoning ends up grading persuasion, not the call.
+
+### Policy
+
+Set fixed limits in `~/.vexorgate/config.json`:
+
+```json
+{
+  "policy": {
+    "sensitive_envs": ["production"],
+    "max_amount": 200,
+    "always_ask_tools": ["github.repos.delete", "stripe.payouts.*"],
+    "loop_threshold": 3
+  }
+}
+```
+
+Use `--no-rules` to run the model alone (as in v0.3), for comparison.
 
 ## Results so far
 
@@ -114,9 +154,11 @@ Two findings:
 - **Model choice drives accuracy.** The same gate scored 16/28 on the small open d1-3B, 23/28 on local Nimble 9B, and 27/28 on hosted d1. Nimble allowed all 14 safe actions; its misses were risks hidden in arguments, such as `type='anyone'` or `-n production`.
 - **Gate design drives attack resistance.** On both hosted models, a single question let about 20% of attacked risky actions through; the layered design let none through.
 
-These are small, synthetic datasets. Full tables, attack details and caveats: [results/SUMMARY.md](results/SUMMARY.md).
+**Rules only, no model (v0.4):** 19/28 on `dev_fresh` (risky stopped 5/14, safe allowed 14/14) and 31/50 on `agent_gating_v2` (safe allowed 25/25). The rules never blocked or questioned a safe case in either set. They were written after seeing which `dev_fresh` cases the models missed, so those numbers are optimistic; the independent evaluation and R-Judge are the fair tests.
 
-**Independent evaluation.** An outside contributor holds a private set of 10 test cases, written from failure patterns raised in public discussion (hidden instructions in tool outputs, a checker talked into "yes", loops that look like progress), not from what VexorGate already handles. The author never sees the cases. The contributor runs each tagged version with the same model and posts the version, model, score and the kinds of cases missed in the [Independent evaluation results](https://github.com/nareshgcv/VexorGate/issues/1) issue.
+These are small, synthetic datasets. Full tables, attack details and caveats: [results/SUMMARY.md](results/SUMMARY.md). What changed in each version and why: [CHANGELOG.md](CHANGELOG.md).
+
+**Independent evaluation.** An outside contributor holds a private set of 10 test cases, written from failure patterns raised in public discussion (hidden instructions in tool outputs, a checker talked into "yes", loops that look like progress), not from what VexorGate already handles. The author never sees the cases. The contributor runs each tagged version with the same model and posts the version, model, score and the kinds of cases missed in the [Independent evaluation results](https://github.com/nareshgcv/VexorGate/issues) issue.
 
 Scores are reported by the evaluator: public and comparable across versions, but not independently re-checkable. Known gaps, such as loop detection, are expected to fail and are reported as findings.
 
@@ -133,8 +175,9 @@ Setup takes about 5 minutes: [docs/claude-code.md](docs/claude-code.md).
 ## Limitations
 
 - **Small, synthetic benchmarks.** Real agent traffic will be messier. Run your own traces.
-- **Argument-level risks.** The model often misses risks that sit in the arguments, such as restarting `-n production` when the user said staging. The next version moves these decisions into plain code: compare target, count, amount and audience from the user's request with the call's arguments, and show the gap.
-- **No loop detection.** Each action is checked on its own; an agent repeating the same action is not caught yet.
+- **Rules cover a few facts.** Environment, count, amount, audience, new payees and repeated calls. Wrong-but-valid records (looking up the wrong payment, sending one customer's file to another) need checks against your own data, which VexorGate does not have.
+- **Keyword-based fact reading.** Rules read facts from plain words and common argument shapes (kubectl, Stripe, Drive, GitHub, S3). Unusual tools or phrasing fall through to the model.
+- **Vague requests ask.** "Restart the server" with a production target asks you. That moves a decision to the user; measure how often it happens in shadow mode before turning on enforcement.
 - **Multi-step runs.** Supported in the audit, but where legitimate preparatory steps look broader than the request is not yet well tested.
 - **Model dependence.** The best accuracy so far needs hosted d1; local Nimble is close but needs a GPU, and the open 3B model is not accurate enough for realistic tool calls.
 - **Data ownership.** No model tested reliably notices one customer's data going to another. Use a rule on record owners for that.
@@ -145,7 +188,8 @@ Setup takes about 5 minutes: [docs/claude-code.md](docs/claude-code.md).
 ```
 vexorgate/
 ├── vexorgate/
-│   ├── gate.py          # the gate, any /systemone endpoint
+│   ├── gate.py          # the gate: rules first, then any /systemone endpoint
+│   ├── facts.py         # hard-fact rules and gap messages
 │   ├── audit.py         # trace audit
 │   ├── claude_hook.py   # Claude Code hook (shadow or enforce)
 │   ├── report.py        # reports
@@ -158,7 +202,7 @@ vexorgate/
 └── private/             # your held-out sets (git-ignored)
 ```
 
-Run the tests with `python -m unittest discover -s tests` (31 tests, no network needed).
+Run the tests with `python -m unittest discover -s tests` (55 tests, no network needed).
 
 ## Contributing
 
@@ -167,4 +211,3 @@ Realistic tool-call cases from production agent workflows are the most valuable 
 ## License
 
 Licensed under the Apache License 2.0. See [LICENSE](LICENSE).
-

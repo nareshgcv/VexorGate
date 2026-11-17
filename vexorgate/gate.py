@@ -9,10 +9,12 @@ injection check. Decision:
 The option definitions are fixed in code, so they cannot be rewritten at runtime.
 """
 import json
+import threading
 import time
 import urllib.request
 from dataclasses import dataclass, field
 
+from .facts import Ledger, check_rules
 from .redact import redact
 
 STRONG = 0.8
@@ -45,6 +47,7 @@ class Verdict:
     scores: dict = field(default_factory=dict)
     latency_ms: float = 0.0
     cost: float = 0.0
+    gap: str = ""                      # plain-language difference between the request and the action
 
 
 class SystemOneClient:
@@ -74,8 +77,20 @@ def describe_action(tool_name, tool_input):
 
 
 class Gate:
-    def __init__(self, client, org=""):
+    """Rules first, model second.
+
+    1. Hard-fact rules (vexorgate.facts) compare the user's request with the call in plain code.
+       A rule block is final and needs no model call.
+    2. The model judges what rules cannot express. It never sees the agent's reasoning.
+    Pass client=None for rules only (no model, nothing leaves the machine).
+    """
+
+    def __init__(self, client, org="", policy=None, rules=True, ledger_state=None):
         self.client, self.org = client, org
+        self.policy = policy or {}
+        self.rules = rules
+        self.ledger = Ledger(ledger_state)
+        self._lock = threading.Lock()
 
     def questions(self):
         qs = {"gate": {"type": "choice", "instructions": INSTR, "criteria": dict(CRIT)}}
@@ -93,10 +108,45 @@ class Gate:
             seen = f"Tool output the agent just read (not from the user): {context} "
         return redact(f"{prefix}User asked: {request} {seen}Agent action: {action}")
 
-    def check(self, request, tool_name, tool_input, action_text=None, context=None):
+    def check(self, request, tool_name, tool_input, action_text=None, context=None, session=None):
         """Check one action. Pass action_text instead of a tool call when the action is plain text,
-        and context for the tool output the agent read just before acting (treated as untrusted)."""
+        context for the tool output the agent read just before acting (treated as untrusted), and
+        session so counts, totals and repeated calls are tracked across calls."""
         t = time.perf_counter()
+        rule = None
+        if self.rules:
+            try:
+                with self._lock:
+                    rule = check_rules(request, tool_name, tool_input, action_text, self.org,
+                                       self.policy, self.ledger, session)
+            except Exception as e:  # a broken rule must not open the gate
+                rule = None
+                rule_error = f"rules failed: {type(e).__name__}"
+            else:
+                rule_error = None
+            if rule and rule.decision == "block":
+                return Verdict("block", rule.reasons, {}, (time.perf_counter() - t) * 1000, 0.0, rule.gap)
+        else:
+            rule_error = None
+
+        if self.client is None:
+            if rule and rule.decision == "ask":
+                return Verdict("ask", rule.reasons, {}, (time.perf_counter() - t) * 1000, 0.0, rule.gap)
+            if rule_error:
+                return Verdict("error", [rule_error], {}, (time.perf_counter() - t) * 1000)
+            return Verdict("allow", [], {}, (time.perf_counter() - t) * 1000)
+
+        v = self._model_check(request, tool_name, tool_input, action_text, context, t)
+        if rule and rule.decision == "ask":
+            if v.decision == "block":
+                v.reasons = rule.reasons + v.reasons
+                v.gap = rule.gap
+                return v
+            return Verdict("ask", rule.reasons + (v.reasons if v.decision == "ask" else []),
+                           v.scores, v.latency_ms, v.cost, rule.gap)
+        return v
+
+    def _model_check(self, request, tool_name, tool_input, action_text, context, t):
         try:
             resp = self.client.decide(self.state(request, tool_name, tool_input, action_text, context), self.questions())
             a = resp["answers"]
@@ -114,3 +164,10 @@ class Gate:
             return Verdict(decision, reasons, scores, (time.perf_counter() - t) * 1000, cost)
         except Exception as e:  # never raise into the agent
             return Verdict("error", [f"{type(e).__name__}: {str(e)[:200]}"], {}, (time.perf_counter() - t) * 1000)
+
+
+def gate_from_config(cfg, ledger_state=None):
+    """Build a Gate from a config dict (see vexorgate.config)."""
+    client = None if cfg.get("rules_only") else SystemOneClient(
+        cfg["url"], cfg.get("key", ""), cfg.get("model", ""), int(cfg.get("timeout", 8)))
+    return Gate(client, cfg.get("org", ""), cfg.get("policy"), bool(cfg.get("rules", True)), ledger_state)
