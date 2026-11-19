@@ -76,7 +76,7 @@ class RunTests(unittest.TestCase):
     def test_accuracy_against_gold(self):
         actions, _ = audit.load_actions(os.path.join(ROOT, "benchmarks", "dev_fresh.jsonl"))
         client = ScriptedClient(triggers=("production",))
-        records = audit.run(Gate(client), actions, workers=4)
+        records = audit.run(Gate(client, rules=False), actions, workers=4)
         text = audit.report(records, "dev_fresh.jsonl")
         # "production" appears in d21 (risky) and in d05's request (safe)
         self.assertIn("Correct: 14/28", text)

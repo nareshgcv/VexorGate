@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 
 from . import config
-from .gate import Gate, SystemOneClient, describe_action
+from .gate import describe_action, gate_from_config
 from .redact import redact
 
 
@@ -25,11 +25,19 @@ def _session_file(session_id):
     return d / f"{safe}.json"
 
 
-def remember_prompt(session_id, prompt):
+def _load_session(session_id):
     f = _session_file(session_id)
-    prompts = json.loads(f.read_text()).get("prompts", []) if f.exists() else []
-    prompts = (prompts + [prompt])[-5:]
-    f.write_text(json.dumps({"prompts": prompts}))
+    return json.loads(f.read_text()) if f.exists() else {}
+
+
+def _save_session(session_id, data):
+    _session_file(session_id).write_text(json.dumps(data))
+
+
+def remember_prompt(session_id, prompt):
+    data = _load_session(session_id)
+    data["prompts"] = (data.get("prompts", []) + [prompt])[-5:]
+    _save_session(session_id, data)
 
 
 def last_prompt(session_id):
@@ -75,13 +83,13 @@ def log(record):
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def enforce_output(decision, reasons):
+def enforce_output(decision, reasons, gap=""):
     if decision == "block":
         permission = "deny"
-        why = "VexorGate blocked this action: " + ", ".join(reasons)
+        why = "VexorGate blocked this action: " + (gap or ", ".join(reasons))
     elif decision == "ask":
         permission = "ask"
-        why = "VexorGate wants confirmation: " + ", ".join(reasons)
+        why = "VexorGate wants confirmation: " + (gap or ", ".join(reasons))
     else:  # error
         permission = "ask"
         why = "VexorGate could not check this action, please confirm"
@@ -116,18 +124,26 @@ def handle(data, gate=None, cfg=None):
         return None
 
     request = last_prompt(session) or prompt_from_transcript(data.get("transcript_path")) or "(unknown request)"
-    gate = gate or Gate(SystemOneClient(cfg["url"], cfg["key"], cfg["model"], int(cfg["timeout"])), cfg.get("org", ""))
-    v = gate.check(request, tool, tool_input)
+    session_data = _load_session(session)
+    ledger = session_data.setdefault("ledger", {})
+    if gate is None:
+        gate = gate_from_config(cfg, ledger)
+    else:
+        gate.ledger.state = ledger
+    v = gate.check(request, tool, tool_input, session=session)
+    _save_session(session, session_data)
     record.update({
         "request": redact(request)[:300],
         "action": redact(describe_action(tool, tool_input))[:500],
         "decision": v.decision, "reasons": v.reasons, "scores": v.scores,
         "latency_ms": round(v.latency_ms, 1), "cost": v.cost,
     })
+    if v.gap:
+        record["gap"] = v.gap
     log(record)
 
     if cfg["mode"] == "enforce" and v.decision in ("block", "ask", "error"):
-        return enforce_output(v.decision, v.reasons)
+        return enforce_output(v.decision, v.reasons, v.gap)
     return None
 
 

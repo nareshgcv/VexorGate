@@ -9,12 +9,17 @@ import os
 import sys
 
 from . import audit, config
-from .gate import Gate, SystemOneClient
+from .gate import gate_from_config
 from .report import build
 
 
 def make_gate(cfg):
-    return Gate(SystemOneClient(cfg["url"], cfg["key"], cfg["model"], int(cfg["timeout"])), cfg.get("org", ""))
+    return gate_from_config(cfg)
+
+
+def add_mode_flags(p):
+    p.add_argument("--rules-only", action="store_true", help="hard-fact rules only: no model, nothing is sent anywhere")
+    p.add_argument("--no-rules", action="store_true", help="model only, as in v0.3 (for comparisons)")
 
 
 def main(argv=None):
@@ -25,6 +30,7 @@ def main(argv=None):
     c.add_argument("--request", required=True, help="what the user asked")
     c.add_argument("--tool", required=True, help="tool name, e.g. Bash")
     c.add_argument("--input", default="{}", help="tool input as JSON, or plain text")
+    add_mode_flags(c)
 
     a = sub.add_parser("audit", help="check every tool call in a .jsonl trace file")
     a.add_argument("file", help="a .jsonl or .json file, or a folder of them (e.g. the R-Judge data folder)")
@@ -35,6 +41,7 @@ def main(argv=None):
     a.add_argument("--dry-run", action="store_true",
                    help="parse and show what would be sent, without calling the endpoint")
     a.add_argument("--top", type=int, default=15)
+    add_mode_flags(a)
     a.add_argument("--no-thoughts", action="store_true",
                    help="multi-step records: judge the agent's actions only, not its own reasoning")
     a.add_argument("--tool-output", action="store_true",
@@ -50,6 +57,10 @@ def main(argv=None):
         return 0
 
     cfg = config.load()
+    if getattr(args, "rules_only", False):
+        cfg["rules_only"] = True
+    if getattr(args, "no_rules", False):
+        cfg["rules"] = False
 
     if args.cmd == "check":
         try:
@@ -57,8 +68,11 @@ def main(argv=None):
         except json.JSONDecodeError:
             tool_input = args.input
         v = make_gate(cfg).check(args.request, args.tool, tool_input)
-        print(json.dumps({"decision": v.decision, "reasons": v.reasons, "scores": v.scores,
-                          "latency_ms": round(v.latency_ms, 1), "cost": v.cost}, indent=2))
+        out = {"decision": v.decision, "reasons": v.reasons}
+        if v.gap:
+            out["gap"] = v.gap
+        out.update({"scores": v.scores, "latency_ms": round(v.latency_ms, 1), "cost": v.cost})
+        print(json.dumps(out, indent=2))
         return 0
 
     actions, problems = audit.load_actions(args.file, thoughts=not args.no_thoughts, tool_output=args.tool_output)
@@ -86,7 +100,7 @@ def main(argv=None):
             print("unreadable:", p, file=sys.stderr)
         return 0
 
-    if not cfg["key"] and "openrouter.ai" in cfg["url"]:
+    if not cfg.get("rules_only") and not cfg["key"] and "openrouter.ai" in cfg["url"]:
         print("No API key set. Add it to ~/.vexorgate/config.json or set VEXORGATE_KEY.", file=sys.stderr)
         return 2
 

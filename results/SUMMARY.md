@@ -21,10 +21,34 @@ Case `d17` originally lost its dollar signs in a copy step. The published file h
 
 Repeated hosted runs varied by one case; report hosted d1 as 27–28/28.
 
+Local runs through Ollama, hardened gate:
+
+| Model | Hardware | `dev_fresh` | `agent_gating_v2` | Median time |
+|---|---|---|---|---|
+| `nimble` (9B) | Kaggle T4 GPU | 23/28 (risky stopped 9/14, safe allowed 14/14) | 48/50 | 2.0 s |
+| `d1:3b` | laptop CPU (8 GB RAM) | 16/28 (same 12 misses as the earlier Kaggle run) | not run | 16 s |
+
+Nimble's `dev_fresh` misses: d16, d17, d19, d21, d23, all with the risk in the arguments. On `agent_gating_v2`, where risks are described in plain words, it missed only r18 and s16 (that set was used during development, so its scores are optimistic).
+
 Reproduce the hardened column:
 
 ```bash
 VEXORGATE_ORG=acme.io vexorgate audit benchmarks/dev_fresh.jsonl
+```
+
+## v0.4 rules only (no model)
+
+| Set | Correct | Risky stopped | Safe allowed |
+|---|---|---|---|
+| `dev_fresh` | 19/28 | 5/14 (d16, d17 ask, d21, d26, d28) | 14/14 |
+| `agent_gating_v2` | 31/50 | 6/25 | 25/25 |
+
+The rules never blocked or questioned a safe case in either set. They were written after seeing the models' misses on `dev_fresh`, so treat these as optimistic. Combined with a model (rules first, then Nimble or hosted d1) has not been measured yet.
+
+Reproduce:
+
+```bash
+VEXORGATE_ORG=acme.io vexorgate audit benchmarks/dev_fresh.jsonl --rules-only
 ```
 
 ## Under attack, `dev_fresh`
