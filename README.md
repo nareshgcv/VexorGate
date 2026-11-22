@@ -21,7 +21,7 @@ Start with a trace audit. It runs on your machine and needs nothing in productio
 ## Install
 
 ```bash
-pip install git+https://github.com/nareshgcv/VexorGate.git@v0.4.0
+pip install git+https://github.com/nareshgcv/VexorGate.git@v0.4.1
 ```
 
 The command and package are lowercase: `vexorgate` or `python -m vexorgate`.
@@ -48,15 +48,17 @@ export VEXORGATE_MODEL=nimble
 
 `d1:3b` runs on most laptops but makes many more mistakes (see results). Local models can be slow on first load, so raise the timeout in `~/.vexorgate/config.json`, for example `{"timeout": 120}`.
 
-**Hosted via OpenRouter (most accurate, needs your own key).**
+**Hosted via OpenRouter (most accurate, needs your own key).** Use d1.1: the original `liquid/d1-20260930` was retired on OpenRouter on November 20, 2026, and returns HTTP 404. `typesafe/jev-1.14-20261014` also works.
 
 ```bash
 export VEXORGATE_URL=https://openrouter.ai/api/v1/systemone
-export VEXORGATE_MODEL=liquid/d1-20260930
+export VEXORGATE_MODEL=liquid/d1.1-20261027
 export VEXORGATE_KEY=sk-or-...
 ```
 
-Set `VEXORGATE_ORG` to your email domain (for example `acme.io`) so the gate can tell internal recipients from external ones. Settings can also go in `~/.vexorgate/config.json`.
+Set `VEXORGATE_ORG` to your email domain (for example `acme.io`) so the gate can tell internal recipients from external ones. Settings can also go in `~/.vexorgate/config.json`. Environment variables override that file.
+
+Rate limits (HTTP 429) and temporary server errors are retried up to 3 times with a short wait (`"retries"` in the config file). If a call still fails, the result is **error**, never allow, and the reason includes the server's own message, for example a retired model name.
 
 ## Quick start: trace audit
 
@@ -89,7 +91,7 @@ Or from Python:
 ```python
 from vexorgate import Gate, SystemOneClient
 
-gate = Gate(SystemOneClient("https://openrouter.ai/api/v1/systemone", key, "liquid/d1-20260930"), org="acme.io")
+gate = Gate(SystemOneClient("https://openrouter.ai/api/v1/systemone", key, "liquid/d1.1-20261027"), org="acme.io")
 v = gate.check("Refund order 1182", "stripe.refunds.create", {"charge": "ch_1183"})
 print(v.decision, v.reasons)
 ```
@@ -156,7 +158,7 @@ Two findings:
 
 **Rules only, no model (v0.4):** 19/28 on `dev_fresh` (risky stopped 5/14, safe allowed 14/14) and 31/50 on `agent_gating_v2` (safe allowed 25/25). The rules never blocked or questioned a safe case in either set. They were written after seeing which `dev_fresh` cases the models missed, so those numbers are optimistic; the independent evaluation and R-Judge are the fair tests.
 
-These are small, synthetic datasets. Full tables, attack details and caveats: [results/SUMMARY.md](results/SUMMARY.md). What changed in each version and why: [CHANGELOG.md](CHANGELOG.md).
+The hosted d1 results above were measured on `liquid/d1-20260930`, which has since been retired; d1.1 has not yet been run on `dev_fresh`. These are small, synthetic datasets. Full tables, attack details and caveats: [results/SUMMARY.md](results/SUMMARY.md). What changed in each version and why: [CHANGELOG.md](CHANGELOG.md).
 
 **Independent evaluation.** An outside contributor holds a private set of 10 test cases, written from failure patterns raised in public discussion (hidden instructions in tool outputs, a checker talked into "yes", loops that look like progress), not from what VexorGate already handles. The author never sees the cases. The contributor runs each tagged version with the same model and posts the version, model, score and the kinds of cases missed in the [Independent evaluation results](https://github.com/nareshgcv/VexorGate/issues) issue.
 
@@ -202,7 +204,7 @@ vexorgate/
 └── private/             # your held-out sets (git-ignored)
 ```
 
-Run the tests with `python -m unittest discover -s tests` (55 tests, no network needed).
+Run the tests with `python -m unittest discover -s tests` (64 tests, no network needed).
 
 ## Contributing
 

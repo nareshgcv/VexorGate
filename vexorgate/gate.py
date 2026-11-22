@@ -11,6 +11,7 @@ The option definitions are fixed in code, so they cannot be rewritten at runtime
 import json
 import threading
 import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -50,22 +51,77 @@ class Verdict:
     gap: str = ""                      # plain-language difference between the request and the action
 
 
-class SystemOneClient:
-    """Minimal client for a /systemone endpoint (OpenRouter, llama.cpp, or any compatible server)."""
+class EndpointError(Exception):
+    """The endpoint answered with an HTTP error. The message includes the server's own explanation."""
 
-    def __init__(self, url, key="", model="", timeout=8):
+
+RETRY_STATUS = {429, 502, 503, 504}   # rate limited or temporarily unavailable: worth another try
+
+
+class SystemOneClient:
+    """Minimal client for a /systemone endpoint (OpenRouter, llama.cpp, or any compatible server).
+
+    Rate limits (429) and temporary server errors (502, 503, 504) are retried up to `retries`
+    times, waiting 1, 2, 4 ... seconds (or the server's Retry-After, capped at 30 s). Any other
+    HTTP error is raised at once with the server's message, so a retired model or a bad key is
+    visible instead of a bare "404 Not Found".
+    """
+
+    def __init__(self, url, key="", model="", timeout=8, retries=3, backoff=1.0):
         self.url, self.key, self.model, self.timeout = url, key.strip(), model, timeout
+        self.retries, self.backoff = max(0, int(retries)), float(backoff)
+
+    def _post(self, data, headers):
+        req = urllib.request.Request(self.url, data=data, headers=headers)
+        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            return json.load(r)
 
     def decide(self, state, questions):
         body = {"state": state, "questions": questions}
         if self.model:
             body["model"] = self.model
-        headers = {"Content-Type": "application/json", "User-Agent": "vexorgate/0.1"}
+        headers = {"Content-Type": "application/json", "User-Agent": f"vexorgate/{_version()}"}
         if self.key:
             headers["Authorization"] = f"Bearer {self.key}"
-        req = urllib.request.Request(self.url, data=json.dumps(body).encode(), headers=headers)
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
-            return json.load(r)
+        data = json.dumps(body).encode()
+        for attempt in range(self.retries + 1):
+            try:
+                return self._post(data, headers)
+            except urllib.error.HTTPError as e:
+                if e.code in RETRY_STATUS and attempt < self.retries:
+                    time.sleep(_wait(e, attempt, self.backoff))
+                    continue
+                raise EndpointError(f"HTTP {e.code}: {_server_message(e)}") from None
+
+
+def _version():
+    from . import __version__
+    return __version__
+
+
+def _wait(err, attempt, backoff):
+    try:
+        after = float(err.headers.get("Retry-After"))
+    except (TypeError, ValueError, AttributeError):
+        after = None
+    return min(30.0, after if after is not None and after >= 0 else backoff * (2 ** attempt))
+
+
+def _server_message(err):
+    """The server's own error text, e.g. OpenRouter's {"error": {"message": "..."}}."""
+    try:
+        raw = err.read().decode("utf-8", "replace")
+    except Exception:
+        raw = ""
+    msg = raw.strip()
+    try:
+        obj = json.loads(raw)
+        e = obj.get("error", obj) if isinstance(obj, dict) else obj
+        msg = (e.get("message") or e.get("detail") or msg) if isinstance(e, dict) else str(e)
+    except (ValueError, AttributeError):
+        pass
+    msg = " ".join(str(msg).split())[:160]
+    return msg or (err.reason or "no message")
 
 
 def describe_action(tool_name, tool_input):
@@ -169,5 +225,6 @@ class Gate:
 def gate_from_config(cfg, ledger_state=None):
     """Build a Gate from a config dict (see vexorgate.config)."""
     client = None if cfg.get("rules_only") else SystemOneClient(
-        cfg["url"], cfg.get("key", ""), cfg.get("model", ""), int(cfg.get("timeout", 8)))
+        cfg["url"], cfg.get("key", ""), cfg.get("model", ""), int(cfg.get("timeout", 8)),
+        int(cfg.get("retries", 3)))
     return Gate(client, cfg.get("org", ""), cfg.get("policy"), bool(cfg.get("rules", True)), ledger_state)

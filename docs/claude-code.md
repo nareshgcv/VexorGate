@@ -19,7 +19,7 @@ Create `~/.vexorgate/config.json`:
 {
   "url": "https://openrouter.ai/api/v1/systemone",
   "key": "sk-or-...",
-  "model": "liquid/d1-20260930",
+  "model": "liquid/d1.1-20261027",
   "org": "yourcompany.com",
   "mode": "shadow"
 }

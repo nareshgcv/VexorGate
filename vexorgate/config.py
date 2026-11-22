@@ -6,10 +6,11 @@ from pathlib import Path
 DEFAULTS = {
     "url": "https://openrouter.ai/api/v1/systemone",
     "key": "",
-    "model": "liquid/d1-20260930",
+    "model": "liquid/d1.1-20261027",   # d1-20260930 was retired on OpenRouter on 2026-11-20
     "org": "",
     "mode": "shadow",            # shadow: log only, never interfere. enforce: answer ask/deny.
     "timeout": 8,
+    "retries": 3,                # retries on rate limits (429) and temporary server errors
     "skip_tools": ["Read", "Glob", "Grep", "LS", "TodoWrite"],
     "rules": True,               # hard-fact rules first (vexorgate.facts)
     "rules_only": False,         # true: no model at all, nothing leaves the machine
