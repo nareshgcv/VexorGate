@@ -48,11 +48,16 @@ Add this to `~/.claude/settings.json` (all projects) or `.claude/settings.json` 
       { "hooks": [ { "type": "command", "command": "python3 -m vexorgate.claude_hook" } ] }
     ],
     "PreToolUse": [
-      { "matcher": "*", "hooks": [ { "type": "command", "command": "python3 -m vexorgate.claude_hook", "timeout": 10 } ] }
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "python3 -m vexorgate.claude_hook", "timeout": 20 } ] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [ { "type": "command", "command": "python3 -m vexorgate.claude_hook" } ] }
     ]
   }
 }
 ```
+
+`PostToolUse` is optional. It tells VexorGate whether the last money action failed, so a corrected retry is not counted twice. The `PreToolUse` timeout leaves room for up to 3 retries when the model endpoint is rate limited.
 
 Restart Claude Code and work as usual.
 
@@ -62,7 +67,7 @@ Restart Claude Code and work as usual.
 vexorgate report --days 7
 ```
 
-It shows how many tool calls the gate would have allowed, sent to you for confirmation, or blocked, the most common reasons, and each action it would have stopped, with your original request next to it. Raw logs are in `~/.vexorgate/logs/`.
+It starts with how often the gate would have interrupted you per week, then shows how many tool calls it would have allowed, sent to you for confirmation, or blocked, per tool, the most common reasons, and each action it would have stopped, with your original request and the exact action next to it. Raw logs are in `~/.vexorgate/logs/`.
 
 ## What gets sent and stored
 
@@ -73,17 +78,17 @@ It shows how many tool calls the gate would have allowed, sent to you for confir
 ## Turning on enforcement (later)
 
 Set `"mode": "enforce"`. Then:
-- **block** → Claude Code denies the tool call and shows the reason, as a gap message when a rule fired ("You asked for staging. The agent targets production.")
-- **ask** → Claude Code asks you to confirm
+- **block** → Claude Code denies the tool call and shows the reason, as a gap message when a rule fired ("You asked for staging. The agent targets production."), and the exact action
+- **ask** → Claude Code asks you to confirm. A flag from the model alone asks rather than blocks, unless you set `"model_blocks": true`
 - **check failed** → Claude Code asks you to confirm
 
 Run shadow mode for at least a week first, and read the report, so you know the false-alarm rate on your own work.
 
-Counts, totals and repeated calls are remembered per Claude Code session, so a second refund or a third identical command is caught.
+Counts, totals and repeated calls are remembered per Claude Code session, so a second refund or a third identical command is caught. Replying "yes" or "go ahead" continues your previous request instead of replacing it, and limits you set earlier ("staging only", "don't touch production") last for the whole session until you name that environment again. After 3 blocks on one task, everything else on that task asks you.
 
-To run without any model, add `"rules_only": true` to the config.
+To run without any model, add `"rules_only": true` to the config. If no key is set for a hosted endpoint, the hook runs on rules only.
 
 ## Known limits
 
-- The gate compares each tool call with your **latest** request. In long sessions, earlier instructions may not be taken into account.
+- The gate remembers your current request and the limits you set, but it reads them with keyword rules. An instruction phrased in an unusual way may not be picked up as a limit.
 - Hooks run before each tool call, so every checked call waits for the gate, usually well under a second with hosted d1.

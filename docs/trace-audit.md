@@ -45,9 +45,17 @@ One JSON object per line. Mix any of these shapes:
               {"role": "assistant", "tool_calls": [{"function": {"name": "gmail_send", "arguments": "{\"to\": \"billing@northstar.com\"}"}}]}]}
 ```
 
-Add `"gold": "allow"` or `"gold": "block"` to any line to score the gate against your own labels.
+Anthropic-style messages also work: `tool_use` blocks in assistant messages and `tool_result` blocks in user messages.
 
-`benchmarks/example_traces.jsonl` shows all three shapes.
+**Labels.** Add `"gold": "allow"` or `"gold": "block"` to any line to score the gate per case. To score each call (for example "block the first call, allow the corrected retry"), put `"gold"` on the tool call itself, or give the line `"gold_calls": ["block", "allow"]`. The report then adds a **Per call** section.
+
+**Organization per record.** Add `"org": "acme.com"` to a line when your logs come from different companies. `--org` sets it for lines that don't.
+
+**Tool results are kept.** In the messages format they come from `tool` messages (matched by `tool_call_id`) or `tool_result` blocks; in the `tool_calls` format, from a `"result"` or `"output"` field on each call. VexorGate uses them to:
+- tell whether a money action went through (`ok`), failed (an error, declined), or has an **unknown** outcome (a timeout, no response). A failed call is released, so a corrected retry is not counted twice. A new order after an unknown outcome goes to a person.
+- list calls it **couldn't verify**, with the reason: no result logged, the log ends right after the call (a crash or a cut-off log), an empty result, or an unreadable line. These are never reported as clean.
+
+`benchmarks/example_traces.jsonl` shows the basic shapes; `benchmarks/multistep_v05.jsonl` shows messages with tool results and per-call labels.
 
 ## 3. Check what will be sent
 
@@ -66,9 +74,11 @@ vexorgate audit traces.jsonl --out report.md --results results.jsonl
 - `report.md`: how many calls would have been allowed, sent to a human, or blocked; the reasons; every flagged action next to the user's request; accuracy if you added labels
 - `results.jsonl`: one line per tool call with the decision and all scores, for your own analysis
 
-Options: `--limit 100` to try a sample first, `--workers 8` for more parallel requests, `--rules-only` to run the hard-fact rules without any model, `--no-rules` to run the model alone.
+Options: `--limit 100` to try a sample first, `--workers 8` for more parallel requests (calls of one conversation always run in order), `--rules-only` to run the hard-fact rules without any model, `--no-rules` to run the model alone, `--model-blocks` to let a flag from the model alone block instead of ask, and `--repeat 10` to run everything 10 times with a fresh gate and list calls whose decision changed between runs.
 
-Flagged actions show a **gap** line when a rule fired, for example "You asked for staging. The agent targets production." Counts and totals are tracked per session (or per conversation for multi-step records), so a second refund for a one-refund request is caught even when each call looks fine on its own.
+The report starts with **false alarms** on safe cases, split into wrongly blocked and sent to a person, before the catch rate.
+
+Flagged actions show a **gap** line when a rule fired, for example "You asked for staging. The agent targets production.", and the **exact action** built from the arguments. Counts and totals are tracked per session (or per conversation for multi-step records), so a second refund for a one-refund request is caught even when each call looks fine on its own. "yes" or "go ahead" continues the previous request.
 
 ## What gets sent
 
@@ -78,8 +88,8 @@ Read-only tools listed in `skip_tools` (by default `Read`, `Glob`, `Grep`, `LS`,
 
 ## Reading the results
 
-- **block**: the broad question said block, or a specific risk check (external send, public exposure, money, deletion, permissions, privacy, untrusted code, beyond the request) scored 0.8 or higher
-- **ask**: no risk fired, but the text contains outside authority claims, such as an injected approval
+- **block**: a rule fired on a hard fact (the gap line says which), or a rule asked and the model also flagged it. With `--model-blocks`, also when the model alone flagged it
+- **ask**: a rule asked, the model alone flagged it (the broad question said block, or a check such as external send, public exposure, money, deletion, permissions, privacy, untrusted code or beyond the request scored 0.8 or higher), or the text contains outside authority claims such as an injected approval
 - **failed to check**: the endpoint could not be reached; these are listed separately and never counted as allowed
 
 The gate compares each call with one user request. In long agent runs, legitimate preparatory steps (reading config, installing a dependency) can look broader than the request, so review flagged calls before drawing conclusions.

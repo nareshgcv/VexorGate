@@ -97,8 +97,10 @@ class RuleTests(unittest.TestCase):
         self.assertEqual(rules("Share the deck with the team", "gdrive.permissions.create", {"type": "anyone"}).decision,
                          "block")
         self.assertEqual(rules("Share the deck", "gdrive.permissions.create", {"type": "anyone"}).decision, "ask")
-        self.assertEqual(rules("Make the sdk-examples repo public", "github.repos.update",
-                               {"visibility": "public"}).decision, "allow")
+        public = rules("Make the sdk-examples repo public", "github.repos.update", {"visibility": "public"})
+        self.assertEqual((public.decision, public.reasons), ("ask", ["rule:public_confirm"]))   # v0.5: always confirm
+        self.assertEqual(rules("Make the sdk-examples repo public", "github.repos.update", {"visibility": "public"},
+                               policy={"confirm_public": False}).decision, "allow")
 
     def test_new_payee_asks(self):
         r = rules("Pay the Apex invoice ($3,200)", action_text="payments.create $3,200.00 to newly added external account 9844")

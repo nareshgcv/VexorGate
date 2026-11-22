@@ -49,6 +49,8 @@ class Verdict:
     latency_ms: float = 0.0
     cost: float = 0.0
     gap: str = ""                      # plain-language difference between the request and the action
+    receipt: str = ""                  # the exact action in plain words, built from its arguments
+    notice: str = ""                   # setup notes, e.g. "rules only: no API key"
 
 
 class EndpointError(Exception):
@@ -138,14 +140,17 @@ class Gate:
     1. Hard-fact rules (vexorgate.facts) compare the user's request with the call in plain code.
        A rule block is final and needs no model call.
     2. The model judges what rules cannot express. It never sees the agent's reasoning.
+       With model_blocks=False, a flag from the model alone asks a person instead of blocking.
     Pass client=None for rules only (no model, nothing leaves the machine).
     """
 
-    def __init__(self, client, org="", policy=None, rules=True, ledger_state=None):
+    def __init__(self, client, org="", policy=None, rules=True, ledger_state=None, model_blocks=True):
         self.client, self.org = client, org
         self.policy = policy or {}
         self.rules = rules
+        self.model_blocks = model_blocks
         self.ledger = Ledger(ledger_state)
+        self.notice = ""
         self._lock = threading.Lock()
 
     def questions(self):
@@ -154,8 +159,9 @@ class Gate:
         qs["injected"] = {"type": "noul", "instructions": INJECTED}
         return qs
 
-    def state(self, request, tool_name, tool_input, action_text=None, context=None):
-        prefix = f"User organization domain: {self.org}. " if self.org else ""
+    def state(self, request, tool_name, tool_input, action_text=None, context=None, org=None):
+        org = self.org if org is None else org
+        prefix = f"User organization domain: {org}. " if org else ""
         action = action_text if action_text is not None else describe_action(tool_name, tool_input)
         seen = ""
         if context:
@@ -164,51 +170,84 @@ class Gate:
             seen = f"Tool output the agent just read (not from the user): {context} "
         return redact(f"{prefix}User asked: {request} {seen}Agent action: {action}")
 
-    def check(self, request, tool_name, tool_input, action_text=None, context=None, session=None):
+    def settle(self, session, outcome):
+        """Tell the gate what happened to the last allowed money action: "ok", "failed" or "unknown".
+        A failed action is released, so a corrected retry is not counted twice."""
+        with self._lock:
+            self.ledger.settle(session or "default", outcome)
+
+    def check(self, request, tool_name, tool_input, action_text=None, context=None, session=None, org=None):
         """Check one action. Pass action_text instead of a tool call when the action is plain text,
-        context for the tool output the agent read just before acting (treated as untrusted), and
-        session so counts, totals and repeated calls are tracked across calls."""
+        context for the tool output the agent read just before acting (treated as untrusted),
+        session so counts, totals, limits and repeated calls are tracked across calls, and org to
+        override the organization domain for this call."""
         t = time.perf_counter()
-        rule = None
+        org = self.org if org is None else org
+        session = session or "default"
+        rule, rule_error = None, None
         if self.rules:
             try:
                 with self._lock:
-                    rule = check_rules(request, tool_name, tool_input, action_text, self.org,
-                                       self.policy, self.ledger, session)
+                    rule = check_rules(request, tool_name, tool_input, action_text, org,
+                                       self.policy, self.ledger, session, commit=False)
+                    if rule.decision == "block":
+                        self.ledger.record(session, rule.pending, "block")
             except Exception as e:  # a broken rule must not open the gate
-                rule = None
-                rule_error = f"rules failed: {type(e).__name__}"
-            else:
-                rule_error = None
+                rule, rule_error = None, f"rules failed: {type(e).__name__}"
             if rule and rule.decision == "block":
-                return Verdict("block", rule.reasons, {}, (time.perf_counter() - t) * 1000, 0.0, rule.gap)
-        else:
-            rule_error = None
+                return self._done(Verdict("block", rule.reasons, {}, 0.0, 0.0, rule.gap), t, tool_name, tool_input,
+                                  action_text)
+            if rule and self.client is not None:
+                # the model reads the task the user is on, not a bare "yes"
+                request = self.ledger._session(session).get("task") or request
 
         if self.client is None:
             if rule and rule.decision == "ask":
-                return Verdict("ask", rule.reasons, {}, (time.perf_counter() - t) * 1000, 0.0, rule.gap)
-            if rule_error:
-                return Verdict("error", [rule_error], {}, (time.perf_counter() - t) * 1000)
-            return Verdict("allow", [], {}, (time.perf_counter() - t) * 1000)
+                v = Verdict("ask", rule.reasons, {}, 0.0, 0.0, rule.gap)
+            elif rule_error:
+                v = Verdict("error", [rule_error])
+            else:
+                v = Verdict("allow")
+            return self._finish(v, rule, session, t, tool_name, tool_input, action_text)
 
-        v = self._model_check(request, tool_name, tool_input, action_text, context, t)
+        v = self._model_check(request, tool_name, tool_input, action_text, context, org,
+                              confirmed=bool(rule and rule.confirmed_recipient))
+        if v.decision == "block" and not (rule and rule.decision == "ask") and not self.model_blocks:
+            v.decision = "ask"                    # the model alone flags it: a person decides
         if rule and rule.decision == "ask":
-            if v.decision == "block":
+            if v.decision == "block":             # a rule and the model both flag it
                 v.reasons = rule.reasons + v.reasons
                 v.gap = rule.gap
-                return v
-            return Verdict("ask", rule.reasons + (v.reasons if v.decision == "ask" else []),
-                           v.scores, v.latency_ms, v.cost, rule.gap)
+            else:
+                v = Verdict("ask", rule.reasons + (v.reasons if v.decision == "ask" else []),
+                            v.scores, 0.0, v.cost, rule.gap)
+        elif rule_error and v.decision == "allow":
+            v = Verdict("error", [rule_error], v.scores, 0.0, v.cost)
+        return self._finish(v, rule, session, t, tool_name, tool_input, action_text)
+
+    def _finish(self, v, rule, session, t, tool_name, tool_input, action_text):
+        if rule is not None:
+            with self._lock:
+                self.ledger.record(session, rule.pending, v.decision)
+        return self._done(v, t, tool_name, tool_input, action_text)
+
+    def _done(self, v, t, tool_name, tool_input, action_text):
+        v.latency_ms = (time.perf_counter() - t) * 1000
+        if v.decision in ("ask", "block"):
+            v.receipt = receipt(tool_name, tool_input, action_text)
+        v.notice = self.notice
         return v
 
-    def _model_check(self, request, tool_name, tool_input, action_text, context, t):
+    def _model_check(self, request, tool_name, tool_input, action_text, context, org, confirmed=False):
+        t = time.perf_counter()
         try:
-            resp = self.client.decide(self.state(request, tool_name, tool_input, action_text, context), self.questions())
+            resp = self.client.decide(self.state(request, tool_name, tool_input, action_text, context, org),
+                                      self.questions())
             a = resp["answers"]
             scores = {name: round(float(a[name]["noul"]), 3) for name in list(CHECKS) + ["injected"]}
             scores["gate_block"] = round(float(a["gate"].get("probabilities", {}).get("block", 0.0)), 3)
-            risks = [name for name in CHECKS if scores[name] >= STRONG]
+            # a recipient the user named is not an unexpected outside send
+            risks = [name for name in CHECKS if scores[name] >= STRONG and not (confirmed and name == "external")]
             gate_blocks = a["gate"]["choice"] == "block"
             if gate_blocks or risks:
                 decision, reasons = "block", risks or ["gate"]
@@ -222,9 +261,41 @@ class Gate:
             return Verdict("error", [f"{type(e).__name__}: {str(e)[:200]}"], {}, (time.perf_counter() - t) * 1000)
 
 
+def receipt(tool_name, tool_input, action_text=None, limit=8):
+    """The exact action in plain words, built from its arguments (never written by a model)."""
+    if action_text is not None and not tool_name:
+        return redact(" ".join(str(action_text).split()))[:300]
+    if isinstance(tool_input, dict):
+        if set(tool_input) == {"command"} or (tool_name or "").lower() in ("bash", "shell", "powershell") and "command" in tool_input:
+            return redact(f"{tool_name}: {tool_input.get('command', '')}")[:300]
+        parts = []
+        for k, v in tool_input.items():
+            if isinstance(v, (dict, list)):
+                v = json.dumps(v, ensure_ascii=False)
+            v = " ".join(str(v).split())
+            parts.append(f"{k} {v[:60] + '...' if len(v) > 60 else v}")
+            if len(parts) >= limit:
+                parts.append(f"(+{len(tool_input) - limit} more)")
+                break
+        return redact(f"{tool_name}: " + ", ".join(parts) if parts else str(tool_name))[:300]
+    return redact(f"{tool_name}: {tool_input}")[:300]
+
+
+def needs_key(cfg):
+    return "openrouter.ai" in str(cfg.get("url", "")) and not cfg.get("key")
+
+
 def gate_from_config(cfg, ledger_state=None):
-    """Build a Gate from a config dict (see vexorgate.config)."""
-    client = None if cfg.get("rules_only") else SystemOneClient(
+    """Build a Gate from a config dict (see vexorgate.config).
+
+    With no model to call (rules_only, or a hosted endpoint and no key), the gate runs on
+    rules only and nothing leaves the machine."""
+    no_model = cfg.get("rules_only") or needs_key(cfg)
+    client = None if no_model else SystemOneClient(
         cfg["url"], cfg.get("key", ""), cfg.get("model", ""), int(cfg.get("timeout", 8)),
         int(cfg.get("retries", 3)))
-    return Gate(client, cfg.get("org", ""), cfg.get("policy"), bool(cfg.get("rules", True)), ledger_state)
+    g = Gate(client, cfg.get("org", ""), cfg.get("policy"), bool(cfg.get("rules", True)), ledger_state,
+             model_blocks=bool(cfg.get("model_blocks", False)))
+    if no_model and not cfg.get("rules_only"):
+        g.notice = "rules only: no API key is set for the model endpoint, so nothing was sent"
+    return g

@@ -85,7 +85,7 @@ class DefaultTests(unittest.TestCase):
         self.assertEqual(config.DEFAULTS["retries"], 3)
 
     def test_config_passes_retries(self):
-        g = gate.gate_from_config(dict(config.DEFAULTS, retries=0))
+        g = gate.gate_from_config(dict(config.DEFAULTS, key="k", retries=0))
         self.assertEqual(g.client.retries, 0)
 
 

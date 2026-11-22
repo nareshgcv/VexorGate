@@ -2,6 +2,33 @@
 
 Each change notes what prompted it, so results can be read next to the reason for the change.
 
+## v0.5.0
+
+**More hard-fact rules, session memory, and the model asks instead of blocking on its own.** Rules-only results: `dev_fresh` 21/28 (v0.4: 19/28), `agent_gating_v2` 32/50 (v0.4: 31/50), new `multistep_v05` 33/35 calls, with no false alarms on any safe case. Not yet run with a model.
+
+- **Recipient and record rule.** Emails, domains and IDs named in the request are compared with the arguments: a look-alike domain (clientco / clientcorp), another ending of a named domain, or swapped digits (1043 / 1034, card 4242 / 4224) block; a look-alike of your own domain, a recipient you didn't name, or a similar customer name ask. A recipient the user named exactly no longer trips the model's external-send check.
+- **The model alone asks.** From the command line and the Claude Code hook, a flag from the model alone now sends the action to a person instead of blocking it. A rule plus a model flag still blocks. `"model_blocks": true` (or `--model-blocks`) restores blocking. The Python `Gate` keeps `model_blocks=True` by default for compatibility.
+- **Blocked calls don't use up the budget.** Counts and totals only include calls that were not blocked; a call that failed is released (from logged results in the audit, from `PostToolUse` in the hook).
+- **Session memory.** "yes", "go ahead", "try again" continue the previous request, so counts don't reset. "staging only", "don't touch production" and "max $60" last for the whole session, until the user names that environment again. Sessions never share anything. This also fixes a v0.4 bug where "update staging, do not touch production" counted production as named.
+- **Count rule:** "the duplicate charge" means one, list lengths, `qty` and share counts ("buy 10 shares"), quantities without money ("3 boxes"), and wildcard filters. New `max_count` policy setting.
+- **Amount rule:** commas and European formats, €, £, ₹, Rs., currency codes, a change of currency, percentages and "half", `amount_cents`, `"full"`, and limits written in the request ("max $60"). A limit price is not read as a total.
+- **Action rule:** draft → send, a question or a check → a change, pause → delete, limit → market order.
+- **Duplicates** are judged by economic fields (account, symbol, side, quantity, price, amount), with the dedupe ID read the right way round: the same `client_order_id` or `idempotency_key` is the same order retried and passes; a new ID is a possible duplicate and asks (or blocks when it goes over the count); a duplicate after an unknown outcome asks.
+- **Repeated blocks:** after 3 blocks on one task (`max_blocks`), everything else on that task asks a person.
+- **Public sharing always asks** to confirm, even when requested (`confirm_public`).
+- **Exact action** on every ask and block, built from the arguments in code.
+- **Rules only by default** when a hosted endpoint has no key: the CLI and the hook run on rules and say so, instead of failing.
+- **Trace audit:** tool results are kept (OpenAI `tool` messages, Anthropic `tool_result` blocks, or `result` on each call); "Couldn't verify" lists calls with no result, a log that ends suddenly, or an empty result; per-call labels (`gold` on a call, or `gold_calls`); `org` per record and `--org`; calls of one conversation always run in order; `--repeat N` reports calls whose decision changed between runs; false alarms come first in the report, split into wrongly blocked and sent to a person.
+- **Shadow report** starts with interruptions per week, and adds a per-tool table.
+- New `benchmarks/multistep_v05.jsonl`: 17 conversations covering an action after a limit was set, an instruction hidden in a tool result, a legitimate change by the user, small calls that add up past a limit, session isolation, "yes" in a long chat, retries after a block, a lost response, a cut-off log, a crashed run, and two calls in the wrong order (expected misses).
+
+Prompted by:
+- The maintainer's run of 37 wrong-argument cases on Jev 1.14: all 5 false alarms came from the model (3 from the broad question, 2 from the external-send check on recipients the user had named); rules-only missed amount 4, count 4, recipient 3, customer 1 and action 3 cases.
+- The trading-agent evaluation (issue #1): duplicate orders slipped past because the repeated-call check compared the full call text, so a new order ID defeated it; the tester's follow-up pointed out that the dedupe ID should be read the other way round, not ignored, and that tool results were dropped from the messages format.
+- Public discussion: a checker that cries wolf gets switched off, so false alarms should lead the report; "couldn't verify" needs a reason; a retry should not escape the original scope; blocked calls should not use up the budget (reserve, commit, release); the latest message is often just "yes"; approvals should show concrete parameters; public sharing should always be confirmed; the model should be a second pass, not the gate.
+
+Not in v0.5: calls in the wrong order, a held "defer" outcome, structured scope from the app, rules for order symbols and sides, and changing a call instead of blocking it. These are on the v0.6 list.
+
 ## v0.4.1
 
 **Default model is now `liquid/d1.1-20261027`, and the client retries rate limits.**

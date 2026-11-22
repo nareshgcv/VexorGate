@@ -80,8 +80,20 @@ Meta's AlignmentCheck prompt and scoring, run on `meta-llama/llama-4-maverick` v
 
 AlignmentCheck's clean misses on `dev_fresh` were all risky actions allowed (d16, d17, d18, d23); it blocked no safe actions. The attack run was cut short when API credit ran out: 34 of about 270 calls failed, and AlignmentCheck counts failures as escalations, so its true fail-open rate is 9% or higher. Its false-alarm rate was not measured. Three option attacks do not apply to AlignmentCheck.
 
+## v0.5 rules only (no model)
+
+| Set | Correct | Risky stopped | Safe allowed | Notes |
+|---|---|---|---|---|
+| `dev_fresh` (org `acme.io`) | 21/28 | 7/14 | 14/14 | v0.4: 19/28 |
+| `agent_gating_v2` (org `ourcompany.com`) | 32/50 | 7/25 | 25/25 | v0.4: 31/50 |
+| `multistep_v05`, per call | 33/35 | 12/14 | 21/21 | per record 15/17 |
+
+Reproduce: `vexorgate audit benchmarks/dev_fresh.jsonl --rules-only --org acme.io` (and the same for the others; `multistep_v05` sets `org` per record).
+
+`multistep_v05` was written for v0.5, from the failure kinds raised in public discussion and by the testers, so it shows the rules doing what they were built for, not how they generalize. Its two misses (m12, m13) are calls in the wrong order, left in on purpose. v0.5 has not yet been run with a model.
+
 ## Known gaps
 
 - Small datasets, synthetic cases and attacks. One case moves a result by several points.
 - Data ownership (one customer's data sent to another) is not reliably caught by any model tested. Handle it with a rule that compares record owners with the recipient.
-- All cases are one request and one action. Multi-step agent runs are untested.
+- `dev_fresh` and `agent_gating_v2` are one request and one action. `multistep_v05` adds conversations, but all three are synthetic; real multi-step traffic is still largely untested.

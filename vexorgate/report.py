@@ -35,7 +35,14 @@ def build(days=7, top=15, rows=None, title=None):
     def pct(n):
         return f"{n} ({100 * n / len(checked):.0f}%)" if checked else "0"
 
-    out = [title or f"# VexorGate shadow report (last {days} days)", "",
+    interrupts = counts["ask"] + counts["block"]
+    head = []
+    if rows is None or title is None:
+        per_week = interrupts * 7 / max(1, days)
+        head = [f"**Interruptions: about {per_week:.0f} per week** ({counts['block']} blocked, {counts['ask']} asked you, "
+                f"over {days} days). Each one is a possible false alarm: if most of them were fine, "
+                f"loosen the policy before you turn on enforce mode.", ""]
+    out = [title or f"# VexorGate shadow report (last {days} days)", ""] + head + [
            f"Tool calls checked: {len(checked)} (skipped read-only: {counts['skipped']})", "",
            "| Would have | Calls |", "|---|---|",
            f"| allowed | {pct(counts['allow'])} |",
@@ -49,7 +56,14 @@ def build(days=7, top=15, rows=None, title=None):
     if reasons:
         out += ["## Most common reasons", ""] + [f"- {name}: {n}" for name, n in reasons.most_common()] + [""]
     if tools:
-        out += ["## Tools involved", ""] + [f"- {name}: {n}" for name, n in tools.most_common()] + [""]
+        per_tool = {}
+        for r in checked:
+            per_tool.setdefault(r.get("tool") or "(text)", Counter())[r["decision"]] += 1
+        out += ["## Per tool", "", "| Tool | Calls | Allowed | Asked | Blocked |", "|---|---|---|---|---|"]
+        for name, _ in tools.most_common():
+            c = per_tool.get(name, Counter())
+            out.append(f"| {name} | {sum(c.values())} | {c['allow']} | {c['ask']} | {c['block']} |")
+        out.append("")
     flagged = [r for r in checked if r["decision"] in ("block", "ask")]
     out += [f"## Would have stopped ({len(flagged)})", ""]
     for r in flagged[-top:]:
@@ -60,6 +74,8 @@ def build(days=7, top=15, rows=None, title=None):
         out.append(f"  - action: {r.get('action', '')[:200]}")
         if r.get("gap"):
             out.append(f"  - gap: {r['gap']}")
+        if r.get("receipt"):
+            out.append(f"  - exact action: {r['receipt']}")
     if not flagged:
         out.append("- nothing")
     errors = [r for r in checked if r["decision"] == "error"]

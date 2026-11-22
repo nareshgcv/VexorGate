@@ -1,8 +1,10 @@
 """Claude Code hook for VexorGate.
 
-Register it for UserPromptSubmit and PreToolUse (see docs/claude-code.md).
+Register it for UserPromptSubmit and PreToolUse, and optionally PostToolUse (see docs/claude-code.md).
   UserPromptSubmit: remembers the user's request for this session.
   PreToolUse:       checks the tool call against that request and logs the verdict.
+  PostToolUse:      records whether the last money action went through or failed, so a failed
+                    call is released and a corrected retry is not counted twice.
 In shadow mode (default) it never interferes. In enforce mode it answers
 "deny" for block and "ask" for ask or error, so the user decides.
 The hook always exits 0 and never raises, so a failure cannot break Claude Code.
@@ -14,6 +16,7 @@ import time
 from datetime import datetime, timezone
 
 from . import config
+from .facts import Ledger
 from .gate import describe_action, gate_from_config
 from .redact import redact
 
@@ -83,19 +86,29 @@ def log(record):
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def enforce_output(decision, reasons, gap=""):
+def enforce_output(decision, reasons, gap="", receipt=""):
+    exact = f" Exact action: {receipt}" if receipt else ""
     if decision == "block":
         permission = "deny"
-        why = "VexorGate blocked this action: " + (gap or ", ".join(reasons))
+        why = "VexorGate blocked this action: " + (gap or ", ".join(reasons)) + exact
     elif decision == "ask":
         permission = "ask"
-        why = "VexorGate wants confirmation: " + (gap or ", ".join(reasons))
+        why = "VexorGate wants confirmation: " + (gap or ", ".join(reasons)) + exact
     else:  # error
         permission = "ask"
         why = "VexorGate could not check this action, please confirm"
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                    "permissionDecision": permission,
                                    "permissionDecisionReason": why}}
+
+
+def _looks_failed(response):
+    if isinstance(response, dict):
+        if response.get("is_error") or response.get("isError") or response.get("error"):
+            return True
+        status = str(response.get("status", "")).lower()
+        return status in ("failed", "error", "declined", "rejected")
+    return False
 
 
 def handle(data, gate=None, cfg=None):
@@ -108,6 +121,14 @@ def handle(data, gate=None, cfg=None):
         prompt = data.get("prompt")
         if prompt:
             remember_prompt(session, prompt)
+        return None
+
+    if event in ("PostToolUse", "PostToolUseFailure"):
+        data_ = _load_session(session)
+        if "ledger" in data_:
+            failed = event == "PostToolUseFailure" or _looks_failed(data.get("tool_response"))
+            Ledger(data_["ledger"]).settle(session, "failed" if failed else "ok")
+            _save_session(session, data_)
         return None
 
     if event != "PreToolUse":
@@ -140,10 +161,12 @@ def handle(data, gate=None, cfg=None):
     })
     if v.gap:
         record["gap"] = v.gap
+    if v.receipt:
+        record["receipt"] = v.receipt
     log(record)
 
     if cfg["mode"] == "enforce" and v.decision in ("block", "ask", "error"):
-        return enforce_output(v.decision, v.reasons, v.gap)
+        return enforce_output(v.decision, v.reasons, v.gap, v.receipt)
     return None
 
 

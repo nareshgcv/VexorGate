@@ -9,7 +9,7 @@ import os
 import sys
 
 from . import audit, config
-from .gate import gate_from_config
+from .gate import gate_from_config, needs_key
 from .report import build
 
 
@@ -46,6 +46,11 @@ def main(argv=None):
                    help="multi-step records: judge the agent's actions only, not its own reasoning")
     a.add_argument("--tool-output", action="store_true",
                    help="multi-step records: also send the tool output the agent read before each action")
+    a.add_argument("--org", help="organization domain for records that do not set their own \"org\"")
+    a.add_argument("--repeat", type=int, default=1,
+                   help="run everything N times with a fresh gate and report calls whose decision changed")
+    a.add_argument("--model-blocks", action="store_true",
+                   help="let a flag from the model alone block (default: it asks a person)")
 
     r = sub.add_parser("report", help="summarize the shadow logs")
     r.add_argument("--days", type=int, default=7)
@@ -61,6 +66,10 @@ def main(argv=None):
         cfg["rules_only"] = True
     if getattr(args, "no_rules", False):
         cfg["rules"] = False
+    if getattr(args, "model_blocks", False):
+        cfg["model_blocks"] = True
+    if getattr(args, "org", None):
+        cfg["org"] = args.org
 
     if args.cmd == "check":
         try:
@@ -71,6 +80,10 @@ def main(argv=None):
         out = {"decision": v.decision, "reasons": v.reasons}
         if v.gap:
             out["gap"] = v.gap
+        if v.receipt:
+            out["action"] = v.receipt
+        if v.notice:
+            out["note"] = v.notice
         out.update({"scores": v.scores, "latency_ms": round(v.latency_ms, 1), "cost": v.cost})
         print(json.dumps(out, indent=2))
         return 0
@@ -100,12 +113,13 @@ def main(argv=None):
             print("unreadable:", p, file=sys.stderr)
         return 0
 
-    if not cfg.get("rules_only") and not cfg["key"] and "openrouter.ai" in cfg["url"]:
-        print("No API key set. Add it to ~/.vexorgate/config.json or set VEXORGATE_KEY.", file=sys.stderr)
-        return 2
+    if not cfg.get("rules_only") and needs_key(cfg):
+        print("No API key set, so running on rules only: nothing is sent anywhere. "
+              "To add the model, set VEXORGATE_KEY or add \"key\" to ~/.vexorgate/config.json.", file=sys.stderr)
 
-    records = audit.run(make_gate(cfg), actions, args.workers, cfg.get("skip_tools", []))
-    text = audit.report(records, os.path.basename(args.file), problems, args.top)
+    records, flips, times = audit.repeat(lambda: make_gate(cfg), actions, args.repeat, args.workers,
+                                         cfg.get("skip_tools", []))
+    text = audit.report(records, os.path.basename(args.file), problems, args.top, flips, times)
     if args.results:
         with open(args.results, "w", encoding="utf-8") as f:
             for rec in records:
