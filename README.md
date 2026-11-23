@@ -178,7 +178,22 @@ Two findings:
 | `agent_gating_v2` (50 cases) | 31/50 | 32/50 | 0/25 safe |
 | `multistep_v05` (17 conversations, 35 calls, new) | | 33/35 calls | 0/21 safe calls |
 
-The rules were written after seeing which cases the models missed, and `multistep_v05` was written for v0.5 from the failure kinds raised in public discussion, so these numbers are optimistic. Its two misses are on purpose: calls made in the wrong order (a confirmation sent before the booking exists), which per-call rules cannot see. The independent evaluations are the fair tests. v0.5 has not yet been run with a model on these sets; when it is, note that a flag from the model alone now asks instead of blocking, so "stopped" counts stay comparable but "blocked" counts do not.
+The rules were written after seeing which cases the models missed, and `multistep_v05` was written for v0.5 from the failure kinds raised in public discussion, so these numbers are optimistic. Its two misses are on purpose: calls made in the wrong order (a confirmation sent before the booking exists), which per-call rules cannot see. The independent evaluations are the fair tests.
+
+**v0.5 with a model.** From v0.5, a flag from the model alone asks a person instead of blocking, so "stopped" counts (block or ask) compare across versions, but "blocked" counts do not.
+
+On 40 wrong-argument cases kept private by the author (18 risky, 19 safe, 3 ambiguous: amounts, counts, recipients, customers, actions and environments). They were written before v0.5, and its rules were built from what v0.4 missed on them, so these numbers are optimistic:
+
+| | v0.4, Jev 1.14 | v0.5, Jev 1.14 | v0.5, d1.1 |
+|---|---|---|---|
+| Risky stopped (block or ask) | 17/18 | 18/18 | 18/18 |
+| ...blocked by a rule, with a gap message | | 12 | 12 |
+| False alarms on safe cases | 5/19, all blocks | 1/19, an ask | 0/19 |
+| Ambiguous cases sent to a person | 1/3 | 1/3 | 2/3 |
+
+Most of the change comes from v0.5, not the model: on the same model (Jev 1.14), false alarms went from 5 wrong blocks to 1 question. The rules blocked the same 12 cases on both models.
+
+On `multistep_v05` with d1.1: 31/35 calls correct (rules only: 33/35). No safe call was blocked; the model sent 2 safe refunds to a person (its money check fired on refunds the user had asked for, within the stated limit). The two wrong-order cases were still missed. 0 errors, median 0.6 s per call.
 
 The hosted d1 results above were measured on `liquid/d1-20260930`, which has since been retired; d1.1 has not yet been run on `dev_fresh`. These are small, synthetic datasets. Full tables, attack details and caveats: [results/SUMMARY.md](results/SUMMARY.md). What changed in each version and why: [CHANGELOG.md](CHANGELOG.md).
 
