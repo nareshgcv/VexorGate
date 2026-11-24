@@ -2,4 +2,4 @@
 from .gate import Gate, SystemOneClient, Verdict
 
 __all__ = ["Gate", "SystemOneClient", "Verdict"]
-__version__ = "0.5.0"
+__version__ = "0.5.1"

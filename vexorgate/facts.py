@@ -142,8 +142,42 @@ REFUND_CALL = r"refunds?\W{0,3}(create|issue)|create_refund|issue_refund|\brefun
 PAYMENT_CALL = r"payments?\W{0,3}(create|submit|send)|transfers?\W{0,3}(create|send)|submit_payment|\btransfer\(|payouts?\W{0,3}create"
 ORDER_CALL = r"(place|create|submit|new)_?orders?\b|orders?\W{0,3}(create|place|submit)\b|\b(buy|sell)_?(order|stock|shares?)?\b"
 
+# Field names for an ID the provider dedupes on, and for an order size, across APIs and venues.
+# Compared after lower-casing and dropping "_" and "-": client_order_id, clientOrderId and
+# client-order-id are the same. Users add their own with the dedupe_keys and qty_keys policy settings.
+DEDUPE_NAMES = {"idempotencykey", "clientorderid", "clientorderref", "requestid", "dedupekey", "dedupeid", "nonce",
+                "cloid",                     # Hyperliquid
+                "newclientorderid",          # Binance
+                "clordid",                   # FIX, BitMEX
+                "orderref",                  # Interactive Brokers
+                "clientoid",                 # OKX, KuCoin, Bitget
+                "orderlinkid",               # Bybit
+                "clientorderidentifier", "clientref", "externalorderid", "userref"}
+QTY_NAMES = {"qty", "quantity", "shares", "units", "count", "numshares", "size",
+             "sz",                           # Hyperliquid, OKX
+             "orderqty",                     # FIX, BitMEX
+             "origqty",                      # Binance
+             "totalquantity",                # Interactive Brokers
+             "contracts", "lots", "volume", "baseqty", "basesize", "orderquantity", "filledqty"}
+
+
+def _keyname(k):
+    return re.sub(r"[_\-\s]", "", str(k)).lower()
+
+
+def _is_dedupe(k, extra=()):
+    n = _keyname(k)
+    return n in DEDUPE_NAMES or n in extra
+
+
+def _is_qty(k, extra=()):
+    n = _keyname(k)
+    return n in QTY_NAMES or n in extra
+
+
 DEDUPE_KEYS = re.compile(r"^(idempotency[_-]?key|client[_-]?order[_-]?id|clientorderid|client[_-]?order[_-]?ref|"
-                         r"request[_-]?id|dedupe[_-]?(key|id)|nonce)$", re.I)
+                         r"request[_-]?id|dedupe[_-]?(key|id)|nonce|cloid|new[_-]?client[_-]?order[_-]?id|"
+                         r"cl[_-]?ord[_-]?id|order[_-]?ref|client[_-]?oid|order[_-]?link[_-]?id)$", re.I)
 VOLATILE_KEYS = re.compile(r"^(timestamp|ts|time|created[_-]?at|sent[_-]?at|trace[_-]?id|retry|attempt)$", re.I)
 QTY_KEYS = re.compile(r"^(qty|quantity|shares|units|count|num[_-]?shares|size)$", re.I)
 LIST_KEYS = re.compile(r"(ids|charges|orders|items|invoices|payments|refunds|recipients|targets|accounts|customers)$", re.I)
@@ -212,6 +246,7 @@ class Facts:
     draft_only: bool = False
     pause_only: bool = False
     wants_limit: bool = False
+    splits: int = None            # "in two orders of 5", "in 3 tranches": identical orders the user asked for
     # action-only
     qty: float = None
     list_count: int = None
@@ -332,8 +367,16 @@ def request_facts(request):
     f.read_only = bool(READ_START.match(low.strip())) and not writes
     f.draft_only = bool(re.search(DRAFT_VERBS, low)) and not re.search(SEND_VERBS, low)
     f.pause_only = bool(re.search(PAUSE_VERBS, low)) and not re.search(DELETE_VERBS, low)
-    f.wants_limit = bool(re.search(r"\blimit\s+(order|price|buy|sell)\b|\bat\s+(?:a\s+)?limit\b|\blimit\b.{0,20}[$€£₹]|"
-                                   r"[$€£₹]\s?[\d.,]+\s+limit\b", low))
+    f.wants_limit = bool(re.search(r"\blimit\s+(order|price|buy|sell)\b|\b(?:at|with|using|as|via|place)\s+(?:a\s+)?limit\b|"
+                                   r"\blimit\s+(?:at|@)\s*[$€£₹]?\s?\d|\blimit\b.{0,20}[$€£₹]|[$€£₹]\s?[\d.,]+\s+limit\b", low)) \
+        and not re.search(r"\bat\s+market\b|\bmarket\s+order\b", low)
+    m = re.search(r"\b(?:in|into|as|across|over|split\s+(?:it\s+|this\s+|that\s+)?into)\s+(\d+|" + "|".join(NUMBER_WORDS)
+                  + r")\s+(?:separate\s+|equal\s+|identical\s+)?(orders|tranches|parts|batches|chunks|clips|slices|lots)\b", low) \
+        or re.search(r"\b(\d+|" + "|".join(NUMBER_WORDS) + r")\s+(?:separate\s+|equal\s+|identical\s+)?"
+                     r"(orders|tranches|batches|clips|slices)\s+of\s+[\d.,]+", low)
+    if m:
+        n = int(m.group(1)) if m.group(1).isdigit() else NUMBER_WORDS[m.group(1)]
+        f.splits = n if n >= 2 else None
     return f
 
 
@@ -392,7 +435,9 @@ def _action_class(tool_name, tool_input, text):
     return None
 
 
-def action_facts(tool_name, tool_input, action_text=None, org=""):
+def action_facts(tool_name, tool_input, action_text=None, org="", dedupe_keys=(), qty_keys=()):
+    dedupe_keys = {_keyname(k) for k in dedupe_keys or ()}
+    qty_keys = {_keyname(k) for k in qty_keys or ()}
     text = _call_text(tool_name, tool_input, action_text)
     low = text.lower()
     f = Facts(envs=_envs(text))
@@ -405,8 +450,14 @@ def action_facts(tool_name, tool_input, action_text=None, org=""):
     refunds = len(re.findall(REFUND_CALL, kind_text))
     payments = len(re.findall(PAYMENT_CALL, kind_text))
     orders = len(re.findall(ORDER_CALL, (tool_name or "").lower())) if tool_name else 0
-    if not orders and structured and any(str(v).lower() in ("buy", "sell") for k, v in items if k.lower() == "side"):
+    if not orders and structured and any(str(v).lower() in ("buy", "sell", "bid", "ask") for k, v in items
+                                         if _keyname(k) in ("side", "action", "direction")):
         orders = 1
+    if not orders and structured and any(_keyname(k) in ("isbuy", "buy") for k, _ in items):
+        orders = 1                                       # Hyperliquid: is_buy
+    if not orders and structured and _tokens(tool_name) & {"order", "orders"} \
+            and not _tokens(tool_name) & READ_TOKENS and any(_is_qty(k, qty_keys) for k, _ in items):
+        orders = 1                                       # exchange.order with a size
     if refunds:
         f.money_kind = "refund"
         f.count = ALL if re.search(ALL_WORDS, low) else refunds
@@ -436,9 +487,9 @@ def action_facts(tool_name, tool_input, action_text=None, org=""):
         kl = k.lower()
         if isinstance(v, bool):
             continue
-        if DEDUPE_KEYS.match(k):
+        if _is_dedupe(k, dedupe_keys):
             f.dedupe_id = str(v)
-        elif QTY_KEYS.match(k) and isinstance(v, (int, float, str)):
+        elif _is_qty(k, qty_keys) and isinstance(v, (int, float, str)):
             x = _number(str(v))
             if x is not None:
                 f.qty = x
@@ -462,7 +513,7 @@ def action_facts(tool_name, tool_input, action_text=None, org=""):
             f.list_count = len(v)
         if isinstance(v, str) and WILDCARD_KEYS.match(k) and (v.strip() in ("*", "%") or re.fullmatch(r"all\b.*", v.strip().lower())):
             f.count = ALL
-        if isinstance(v, (str, int)) and not isinstance(v, bool) and TARGET_KEYS.search(k) and not DEDUPE_KEYS.match(k):
+        if isinstance(v, (str, int)) and not isinstance(v, bool) and TARGET_KEYS.search(k) and not _is_dedupe(k, dedupe_keys):
             digits = re.sub(r"\D", "", str(v))
             if len(digits) >= 3:
                 f.target_ids.append((k, str(v), digits))
@@ -498,7 +549,7 @@ def action_facts(tool_name, tool_input, action_text=None, org=""):
         f.audience = "public"
     f.action_class = _action_class(tool_name, tool_input, text)
     if structured:
-        econ = {k: v for k, v in items if not DEDUPE_KEYS.match(k) and not VOLATILE_KEYS.match(k)}
+        econ = {k: v for k, v in items if not _is_dedupe(k, dedupe_keys) and not VOLATILE_KEYS.match(k)}
         f.econ = (tool_name or "") + " " + json.dumps(econ, sort_keys=True, default=str)
     return f
 
@@ -582,6 +633,22 @@ def _check_recipients(req, act, org):
         if twin:
             asks.append(("customer", f"You asked about {twin.title()}. The agent uses the name {name}."))
     return blocks, asks, confirmed
+
+
+def _identical_allowed(req, kind):
+    """How many identical money actions the request allows: an explicit split ("in two orders of 5"),
+    or a count of that kind of action ("two refunds"). Otherwise one: a second identical one is a duplicate."""
+    if req.splits:
+        return req.splits
+    if isinstance(req.count, int) and req.count_noun and kind and req.count_noun.startswith(kind[:5]):
+        return req.count
+    return 1
+
+
+def _so_far(asked, this, total, unit=None):
+    """Gap wording that keeps the call's own size apart from the running total in this task:
+    "You asked for 5 shares. This call is 5 shares, which would make 10 shares in total in this task." """
+    return f"You asked for {asked}. This call is {this}, which would make {total} in total in this task."
 
 
 def _check_action(req, act):
@@ -714,7 +781,8 @@ def check_rules(request, tool_name, tool_input, action_text=None, org="", policy
     session = session or "default"
     task, limits = ledger.resolve(session, request)
     req = request_facts(task)
-    act = action_facts(tool_name, tool_input, action_text, org)
+    act = action_facts(tool_name, tool_input, action_text, org,
+                       policy.get("dedupe_keys") or (), policy.get("qty_keys") or ())
     text = _call_text(tool_name, tool_input, action_text)
     t = ledger.task(session, task)
 
@@ -752,6 +820,8 @@ def check_rules(request, tool_name, tool_input, action_text=None, org="", policy
             same = [e for e in t["entries"] if e.get("econ") == act.econ and e["status"] != "failed"]
             if same and act.dedupe_id and any(e.get("id") == act.dedupe_id for e in same):
                 retry_same_id = True                     # the provider dedupes this ID: the same order retried
+            elif same and len(same) < _identical_allowed(req, kind):
+                pass                                     # the user asked for this many identical orders
             elif any(e["status"] == "unknown" for e in same):
                 unverified = True
                 asks.append(("duplicate_unverified", f"An earlier identical {kind} in this task has no confirmed result. "
@@ -771,8 +841,10 @@ def check_rules(request, tool_name, tool_input, action_text=None, org="", policy
     qty_noun = bool(noun and (re.fullmatch(QTY_NOUNS, noun) or re.fullmatch(QTY_NOUNS, noun + "s")))
     if isinstance(rc, int) and qty_noun and total_qty is not None and not retry_same_id:
         if total_qty > rc and not unverified:
-            blocks.append(("count", f"You asked for {rc} {_noun(noun, rc)}. "
-                                    f"The agent wants {total_qty:g} {_noun(noun, total_qty)}."))
+            blocks.append(("count", _so_far(f"{rc} {_noun(noun, rc)}", f"{act.qty:g} {_noun(noun, act.qty)}",
+                                            f"{total_qty:g} {_noun(noun, total_qty)}", noun)
+                           if prior_qty else f"You asked for {rc} {_noun(noun, rc)}. "
+                                              f"The agent wants {total_qty:g} {_noun(noun, total_qty)}."))
     elif kind and not retry_same_id:
         if isinstance(rc, int):
             label = kind
@@ -780,8 +852,13 @@ def check_rules(request, tool_name, tool_input, action_text=None, org="", policy
                 blocks.append(("count", f"You asked for {rc} {_noun(label, rc)}. The agent wants to {kind} all of them."))
             elif isinstance(total_count, int) and total_count > rc and not unverified:
                 money = f", {_fmt_money(total_amount, act.currency or req.currency)} total" if total_amount else ""
-                blocks.append(("count", f"You asked for {rc} {_noun(label, rc)}. "
-                                        f"The agent wants {total_count} {_noun(label, total_count)}{money}."))
+                if prior_n:
+                    blocks.append(("count", f"You asked for {rc} {_noun(label, rc)}. This call is {act.count} more "
+                                            f"{_noun(label, act.count)}, which would make {total_count} "
+                                            f"{_noun(label, total_count)} in this task ({money[2:] or 'no amount given'})."))
+                else:
+                    blocks.append(("count", f"You asked for {rc} {_noun(label, rc)}. "
+                                            f"The agent wants {total_count} {_noun(label, total_count)}{money}."))
         elif rc is None and act.count == ALL:
             asks.append(("count", f"You didn't say how many. The agent wants to {kind} all of them."))
     if kind and not retry_same_id:
@@ -794,13 +871,22 @@ def check_rules(request, tool_name, tool_input, action_text=None, org="", policy
         if req.currency and act.currency and req.currency != act.currency:
             blocks.append(("amount", f"You asked for {req.currency}. The agent uses {act.currency}."))
         elif total_amount and req.amount is not None and total_amount > req.amount * 1.005 + 0.01 and not unverified:
-            blocks.append(("amount", f"You asked for {_fmt_money(req.amount, req.currency)}. "
-                                     f"The agent wants {_fmt_money(total_amount, act.currency or req.currency)}."))
+            cur = act.currency or req.currency
+            blocks.append(("amount", _so_far(_fmt_money(req.amount, req.currency), _fmt_money(act.amount or 0, cur),
+                                             _fmt_money(total_amount, cur), None)
+                           if prior_amount else f"You asked for {_fmt_money(req.amount, req.currency)}. "
+                                                f"The agent wants {_fmt_money(total_amount, cur)}."))
         if req.percent is not None and act.percent is not None and act.percent > req.percent + 0.01:
             blocks.append(("amount", f"You asked for {req.percent:g}%. The agent wants {act.percent:g}%."))
         if total_amount and limits["cap"] is not None and total_amount > limits["cap"] + 0.01:
-            blocks.append(("amount", f"You set a limit of {_fmt_money(limits['cap'], req.currency)}. "
-                                     f"The agent wants {_fmt_money(total_amount, act.currency or req.currency)}."))
+            cur = act.currency or req.currency
+            if prior_amount:
+                blocks.append(("amount", f"You set a limit of {_fmt_money(limits['cap'], req.currency)}. This call is "
+                                         f"{_fmt_money(act.amount or 0, cur)}, which would make "
+                                         f"{_fmt_money(total_amount, cur)} in total in this task."))
+            else:
+                blocks.append(("amount", f"You set a limit of {_fmt_money(limits['cap'], req.currency)}. "
+                                         f"The agent wants {_fmt_money(total_amount, cur)}."))
         if total_amount and max_amount is not None and total_amount > float(max_amount):
             asks.append(("amount_cap", f"{_fmt_money(total_amount, act.currency)} is above your limit of "
                                        f"{_fmt_money(float(max_amount))}."))

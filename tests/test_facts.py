@@ -74,7 +74,8 @@ class RuleTests(unittest.TestCase):
         second = rules(req, "stripe.refunds.create", {"charge": "ch_1183", "amount": 4000}, ledger=led)
         self.assertEqual(first.decision, "allow")
         self.assertEqual(second.decision, "block")
-        self.assertIn("You asked for 1 refund. The agent wants 2 refunds, $80.00 total.", second.gap)
+        self.assertIn("You asked for 1 refund. This call is 1 more refund, which would make 2 refunds in this task "
+                      "($80.00 total).", second.gap)
 
     def test_counts_are_per_session(self):
         led = Ledger()
@@ -190,7 +191,8 @@ class HookAndCliTests(unittest.TestCase):
         self.assertIsNone(first)
         out = second["hookSpecificOutput"]
         self.assertEqual(out["permissionDecision"], "deny")
-        self.assertIn("You asked for 1 refund. The agent wants 2 refunds, $80.00 total.", out["permissionDecisionReason"])
+        self.assertIn("You asked for 1 refund. This call is 1 more refund, which would make 2 refunds in this task",
+                      out["permissionDecisionReason"])
 
     def test_cli_rules_only_check(self):
         buf = io.StringIO()

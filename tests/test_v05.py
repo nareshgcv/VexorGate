@@ -293,7 +293,8 @@ class DuplicateTests(unittest.TestCase):
         rules(req, "broker.place_order", dict(self.order, client_order_id="x1"), ledger=led)
         r = rules(req, "broker.place_order", dict(self.order, client_order_id="x2"), ledger=led)
         self.assertEqual((r.decision, r.reasons), ("block", ["rule:count"]))
-        self.assertIn("You asked for 10 shares. The agent wants 20 shares.", r.gap)
+        self.assertIn("You asked for 10 shares. This call is 10 shares, which would make 20 shares in total in this task.",
+                      r.gap)
 
     def test_duplicate_without_a_stated_count_asks(self):
         led = Ledger()
@@ -432,7 +433,7 @@ class HookTests(unittest.TestCase):
         self.assertIsNone(claude_hook.handle(dict(call, tool_input={"charge": "ch_9001", "amount": 4000}), cfg=cfg))
         out = claude_hook.handle(dict(call, tool_input={"charge": "ch_9002", "amount": 4000}), cfg=cfg)
         reason = out["hookSpecificOutput"]["permissionDecisionReason"]
-        self.assertIn("You asked for 1 refund. The agent wants 2 refunds", reason)
+        self.assertIn("You asked for 1 refund. This call is 1 more refund, which would make 2 refunds", reason)
         self.assertIn("Exact action: stripe.refunds.create: charge ch_9002, amount 4000", reason)
 
     def test_go_ahead_in_the_hook_keeps_the_count(self):

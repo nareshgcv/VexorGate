@@ -23,6 +23,8 @@ DEFAULTS = {
         "max_count": None,                  # more money actions than this per task always asks
         "max_blocks": 3,                    # after this many blocks on one task, everything else asks
         "confirm_public": True,             # making something public always asks, even when requested
+        "dedupe_keys": [],                  # your own field names for an ID the provider dedupes on (e.g. "myOrderTag")
+        "qty_keys": [],                     # your own field names for an order size
     },
 }
 

@@ -76,7 +76,7 @@ vexorgate audit traces.jsonl --out report.md --results results.jsonl
 
 Options: `--limit 100` to try a sample first, `--workers 8` for more parallel requests (calls of one conversation always run in order), `--rules-only` to run the hard-fact rules without any model, `--no-rules` to run the model alone, `--model-blocks` to let a flag from the model alone block instead of ask, and `--repeat 10` to run everything 10 times with a fresh gate and list calls whose decision changed between runs.
 
-The report starts with **false alarms** on safe cases, split into wrongly blocked and sent to a person, before the catch rate.
+The report opens with a **coverage** line in numbers, for example "checked 47 of 51 tool calls found in these logs; 3 judged on their arguments only; 1 unreadable line", followed by "calls made outside them are not visible", so a clean report is never read as full coverage. Then come **false alarms** on safe cases, split into wrongly blocked and sent to a person, before the catch rate.
 
 Flagged actions show a **gap** line when a rule fired, for example "You asked for staging. The agent targets production.", and the **exact action** built from the arguments. Counts and totals are tracked per session (or per conversation for multi-step records), so a second refund for a one-refund request is caught even when each call looks fine on its own. "yes" or "go ahead" continues the previous request.
 

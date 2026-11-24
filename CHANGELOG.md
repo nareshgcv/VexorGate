@@ -2,6 +2,21 @@
 
 Each change notes what prompted it, so results can be read next to the reason for the change.
 
+## v0.5.1
+
+**Fixes from the trading tester's v0.5.0 run, and a coverage line in every audit report.** No change on the existing benchmarks (rules only: `dev_fresh` 21/28, `agent_gating_v2` 32/50, `multistep_v05` 33/35 calls, no false alarms).
+
+- **Field names across venues.** The duplicate check now recognizes dedupe IDs and sizes by their names on common brokers and exchanges: `cloid` and `sz` (Hyperliquid), `newClientOrderId` and `origQty` (Binance), `clOrdID` and `orderQty` (FIX), `orderRef` and `totalQuantity` (Interactive Brokers), `clientOid` (OKX, KuCoin), `orderLinkId` (Bybit), and more. Names match regardless of case, `_` or `-`. On Hyperliquid, v0.5.0 had it backwards: a new `cloid` after a timeout passed, and a same-`cloid` retry was sent to a person. Orders are also recognized from `is_buy`, or from a size on a tool named "order".
+- **Your own field names.** New `dedupe_keys` and `qty_keys` policy settings.
+- **Identical orders the request asks for are not duplicates.** The number comes from the request: "buy 10 MSFT in two orders of 5" allows two identical orders, "in 3 tranches" three, "two refunds" two. With no split stated, the second identical order is still a duplicate. In v0.5.0 the second tranche was asked about, a regression from v0.4.
+- **Clearer gap for running totals.** When earlier calls in the task add up, the gap keeps the call apart from the total: "You asked for 5 shares. This call is 5 shares, which would make 10 shares in total in this task." v0.5.0 said "the agent wants 10 shares" for a 5-share call.
+- **More ways to say "limit".** "with a limit at 140", "limit at 140", "using a limit" are now read as a limit order. A request that says "at market" or "market order" is not.
+- **Coverage line** at the top of every audit report, in numbers: tool calls checked out of those found, how many were judged on their arguments only, skipped or unreadable, and that calls outside the logs are not visible.
+
+Prompted by:
+- The trading tester's v0.5.0 rerun (issue #1): 13 Alpaca-shaped cases, 5 runs; rules only 10/13, with d1.1 12/13 and 7/7 risky stopped, 0 verdict changes. The tester reported the split-order regression, the Hyperliquid field names, the limit phrasing and the running-total wording, and asked that the number of allowed identical orders come from the request rather than a fixed number.
+- Public discussion: a clean audit report should say what it covers in numbers, because the gap itself is usually the finding.
+
 ## v0.5.0
 
 **More hard-fact rules, session memory, and the model asks instead of blocking on its own.** Rules-only results: `dev_fresh` 21/28 (v0.4: 19/28), `agent_gating_v2` 32/50 (v0.4: 31/50), new `multistep_v05` 33/35 calls, with no false alarms on any safe case. Not yet run with a model.

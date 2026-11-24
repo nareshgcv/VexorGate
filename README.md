@@ -21,7 +21,7 @@ Start with a trace audit. It runs on your machine and needs nothing in productio
 ## Install
 
 ```bash
-pip install git+https://github.com/nareshgcv/VexorGate.git@v0.5.0
+pip install git+https://github.com/nareshgcv/VexorGate.git@v0.5.1
 ```
 
 The command and package are lowercase: `vexorgate` or `python -m vexorgate`.
@@ -108,7 +108,7 @@ print(v.decision, v.reasons)
 | Recipient and record | `billing@clientco.com`, "ClientCo", "order 1043", "card ending 4242" | emails and IDs in the arguments | look-alike domain (clientcorp) or swapped digits (1034): block; a look-alike of your own domain, or a recipient you didn't name: ask |
 | Action | "draft", "check", "what is...", "pause", "limit order" | `send`, `update`, `place_order`, `delete`, `type=market` | a stronger action than asked: block |
 | Audience | "with the team", "make it public" | `type='anyone'`, `visibility='public'`, public-access blocks off | public when the team was asked: block; public when not asked: ask; public when asked: ask to confirm (can't be undone) |
-| Duplicate | | the same money action again, judged by its economic fields (account, symbol, side, amount...) | same dedupe ID (`client_order_id`, `idempotency_key`): a retry, allow; new ID: ask, or block if it goes over the count; earlier outcome unknown: ask |
+| Duplicate | "in two orders of 5", "two refunds" | the same money action again, judged by its economic fields (account, symbol, side, size, amount...) | identical actions up to the number the request asks for: allow; same dedupe ID (`client_order_id`, `idempotency_key`, `cloid`, `newClientOrderId`, `clOrdID`...): a retry, allow; new ID: ask, or block if it goes over the count; earlier outcome unknown: ask |
 | New payee | | "newly added account" | ask |
 | Loop | | the same call repeated (3 times by default) | block |
 | Repeated blocks | | 3 blocks on one task | everything else on that task asks a person |
@@ -142,13 +142,15 @@ Set fixed limits in `~/.vexorgate/config.json`:
     "loop_threshold": 3,
     "max_count": 5,
     "max_blocks": 3,
+    "dedupe_keys": ["myOrderTag"],
+    "qty_keys": ["lot_count"],
     "confirm_public": true
   },
   "model_blocks": false
 }
 ```
 
-`max_count` asks when one task makes more money actions than this. `max_blocks` sends a task to a person after this many blocks. `confirm_public` asks before anything is made public, even when the user asked for it. `model_blocks` lets a flag from the model alone block instead of ask.
+`max_count` asks when one task makes more money actions than this. `max_blocks` sends a task to a person after this many blocks. `confirm_public` asks before anything is made public, even when the user asked for it. `model_blocks` lets a flag from the model alone block instead of ask. `dedupe_keys` and `qty_keys` add your own field names for an order's dedupe ID and size; common names across brokers and exchanges (Alpaca, Hyperliquid, Binance, FIX, Interactive Brokers, OKX, Bybit and others) are built in.
 
 Use `--no-rules` to run the model alone (as in v0.3), for comparison.
 
@@ -201,7 +203,20 @@ The hosted d1 results above were measured on `liquid/d1-20260930`, which has sin
 
 Scores are reported by the evaluator: public and comparable across versions, but not independently re-checkable. Known gaps, such as loop detection, are expected to fail and are reported as findings.
 
-**Independent evaluation, trading agents** ([issue #1](https://github.com/nareshgcv/VexorGate/issues/1)). A second outside tester wrote 13 private trading-agent cases (20 calls, 7 risky). On v0.4.0 with d1.1, run 6 times: 11/13 cases correct, 5/7 risky calls stopped, no false alarms, and **no verdict changed across 6 runs**. Rules alone stopped 0/7, because v0.4 had no rules for orders. It missed both duplicate-order cases (a second identical order with a new order ID, and a new order after a lost response). v0.5 adds rules for both; they have not been re-run by the tester yet.
+**Independent evaluation, trading agents** ([issue #1](https://github.com/nareshgcv/VexorGate/issues/1)). A second outside tester wrote 13 private trading-agent cases (20 calls, 7 risky). On v0.4.0 with d1.1, run 6 times: 11/13 cases correct, 5/7 risky calls stopped, no false alarms, and **no verdict changed across 6 runs**. Rules alone stopped 0/7, because v0.4 had no rules for orders. It missed both duplicate-order cases (a second identical order with a new order ID, and a new order after a lost response).
+
+The same tester re-ran the same 13 cases (Alpaca-shaped) on v0.5.0, 5 times:
+
+| | v0.4.0 | v0.5.0 |
+|---|---|---|
+| Rules only: correct | 6/13 | 10/13 |
+| Rules only: risky stopped | 0/7 | 5/7 |
+| With d1.1: correct | 11/13 | 12/13 |
+| With d1.1: risky stopped | 5/7 | 7/7 |
+| False alarms | 0 | 1, sent to a person, nothing wrongly blocked |
+| Verdict changes between runs | 0 over 6 runs | 0 over 5 runs |
+
+Both duplicate-order cases were fixed. The tester also found what v0.5.1 fixes: a request that splits an order ("buy 10 MSFT in two orders of 5") had its second order asked about as a duplicate, Hyperliquid's field names (`cloid`, `sz`) were not recognized, so the duplicate check ran backwards on them, "with a limit at 140" was not read as a limit order, and a repeated order's gap showed the running total as if it were the call's size. A look-alike symbol (MET to META) is caught only by the model, as a question. These cases are synthetic; the tester's production system trades algorithmically, so it has no user request to compare against.
 
 ## Shadow mode in Claude Code
 
@@ -246,7 +261,7 @@ vexorgate/
 └── private/             # your held-out sets (git-ignored)
 ```
 
-Run the tests with `python -m unittest discover -s tests` (121 tests, no network needed).
+Run the tests with `python -m unittest discover -s tests` (133 tests, no network needed).
 
 ## Contributing
 

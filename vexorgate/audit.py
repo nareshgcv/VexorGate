@@ -491,8 +491,30 @@ def verify_section(records, problems=()):
     return out + [""]
 
 
+def coverage_line(records, problems=()):
+    """What the audit saw, as numbers, so a clean report is never read as full coverage."""
+    found = len(records)
+    checked = sum(1 for r in records if r.get("decision") in ("allow", "ask", "block"))
+    skipped = sum(1 for r in records if r.get("decision") == "skipped")
+    failed = sum(1 for r in records if r.get("decision") == "error")
+    partial = sum(1 for r in records if r.get("verify") and r.get("decision") in ("allow", "ask", "block"))
+    parts = [f"checked {checked} of {found} tool calls found in these logs"]
+    if partial:
+        parts.append(f"{partial} judged on their arguments only (see Couldn't verify)")
+    if skipped:
+        parts.append(f"{skipped} skipped as read-only")
+    if failed:
+        parts.append(f"{failed} could not be checked")
+    if problems:
+        parts.append(f"{len(problems)} unreadable line(s)")
+    return (f"**Coverage:** {'; '.join(parts)}. This audit only covers calls in these logs: "
+            f"calls made outside them are not visible.")
+
+
 def report(records, source, problems=(), top=15, flips=None, times=1):
     text = build(rows=records, top=top, title=f"# VexorGate trace audit: {source}")
+    title, nl, body = text.partition("\n")
+    text = title + nl + "\n" + coverage_line(records, problems) + "\n" + body
     extra = accuracy_section(records) + per_call_section(records) + verify_section(records, problems)
     if flips is not None and times > 1:
         extra += repeat_section(flips, times, len(records))
