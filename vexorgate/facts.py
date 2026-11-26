@@ -30,6 +30,8 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from .redact import redact
+
 ALL = "all"
 
 # ---------------------------------------------------------------- environments
@@ -550,7 +552,7 @@ def action_facts(tool_name, tool_input, action_text=None, org="", dedupe_keys=()
     f.action_class = _action_class(tool_name, tool_input, text)
     if structured:
         econ = {k: v for k, v in items if not _is_dedupe(k, dedupe_keys) and not VOLATILE_KEYS.match(k)}
-        f.econ = (tool_name or "") + " " + json.dumps(econ, sort_keys=True, default=str)
+        f.econ = redact((tool_name or "") + " " + json.dumps(econ, sort_keys=True, default=str))
     return f
 
 

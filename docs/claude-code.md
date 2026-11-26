@@ -57,7 +57,13 @@ Add this to `~/.claude/settings.json` (all projects) or `.claude/settings.json` 
 }
 ```
 
-`PostToolUse` is optional. It tells VexorGate whether the last money action failed, so a corrected retry is not counted twice. The `PreToolUse` timeout leaves room for up to 3 retries when the model endpoint is rate limited.
+`PostToolUse` is optional. It tells VexorGate whether the last money action failed, so a corrected retry is not counted twice.
+
+Keep the `PreToolUse` timeout above VexorGate's own time limit for a check (`"deadline"`, 15 seconds by default, retries included). If a hook runs past Claude Code's timeout, Claude Code may run the tool without an answer.
+
+**It fails closed in enforce mode.** Claude Code runs a tool when its hook gives no answer, so any problem inside VexorGate (a damaged session file, a broken `config.json`, an unexpected input, or another hook holding the session for more than 10 seconds) answers "ask" with the reason, instead of staying silent. A damaged session file is set aside as `*.damaged-*.json`, and the next call asks once, because earlier counts in that session were lost. In shadow mode, errors are only logged.
+
+**Files stay private.** `~/.vexorgate/` and its `sessions/` and `logs/` folders are readable only by you (on macOS and Linux), prompts are redacted before they are saved, and session files are written all at once with a lock, so parallel tool calls don't lose each other's counts.
 
 Restart Claude Code and work as usual.
 

@@ -2,6 +2,19 @@
 
 Each change notes what prompted it, so results can be read next to the reason for the change.
 
+## v0.5.2
+
+**Security fixes for the Claude Code hook.** No change to what the gate decides: rules and model are the same as v0.5.1, and all earlier benchmark results stand.
+
+- **The hook fails closed in enforce mode.** Before, any error inside the hook was logged and the hook printed nothing, and Claude Code runs a tool when its hook gives no answer. A half-written session file (possible when two hooks wrote at once), a broken `config.json` or an unexpected input therefore let the action through, even one that should have been blocked. Now any such problem answers "ask" with the reason. Enforce mode is still recognized when the config file itself is broken (from `VEXORGATE_MODE`, or the file's text). A damaged session file is set aside, and the next call asks once because earlier counts were lost. Shadow mode still only logs.
+- **A time limit for each check.** Retries on rate limits could wait up to 30 seconds each, past Claude Code's hook timeout. Now the whole check, retries and waits included, stops at `deadline` (15 seconds by default) and answers error, which the hook turns into ask.
+- **Private, redacted files.** Session files stored raw prompts and full tool arguments, readable by other users on the machine. Now prompts are redacted before they are saved, the ledger keeps redacted call fields, and `~/.vexorgate`, `sessions/` and `logs/` are owner-only (0700, files 0600) on macOS and Linux.
+- **Parallel tool calls.** Session files are now written atomically and behind a per-session lock, so hooks running at the same time no longer lose each other's counts or leave a damaged file. Tested with 10 hook processes at once: 10 of 10 calls recorded.
+
+Found in a security review of v0.5.1, with the fail-open case reproduced: a production restart after a request for staging got no answer from the hook in enforce mode when its session file was damaged.
+
+Not changed yet (on the v0.6 list): refusing a plain `http://` endpoint for remote hosts and not following redirects with the API key, warning on config typos such as `"mode": "enforced"`, showing tool arguments as code in audit reports, and naming session files by a hash.
+
 ## v0.5.1
 
 **Fixes from the trading tester's v0.5.0 run, and a coverage line in every audit report.** No change on the existing benchmarks (rules only: `dev_fresh` 21/28, `agent_gating_v2` 32/50, `multistep_v05` 33/35 calls, no false alarms).

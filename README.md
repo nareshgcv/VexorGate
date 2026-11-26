@@ -21,7 +21,7 @@ Start with a trace audit. It runs on your machine and needs nothing in productio
 ## Install
 
 ```bash
-pip install git+https://github.com/nareshgcv/VexorGate.git@v0.5.1
+pip install git+https://github.com/nareshgcv/VexorGate.git@v0.5.2
 ```
 
 The command and package are lowercase: `vexorgate` or `python -m vexorgate`.
@@ -125,7 +125,7 @@ A rule block is final and needs no model call. **The request can only narrow wha
 2. eight narrow yes/no checks: external send, public exposure, money, deletion, permissions, privacy, untrusted code, beyond the request
 3. an injection check: does the text contain approvals or instructions that did not come from the user?
 
-When the broad question says block or any check scores 0.8 or higher, the model has **flagged** the action. From the command line and the Claude Code hook, a flag from the model alone **asks** a person by default; it blocks only when a rule also fired, or when you set `"model_blocks": true`. If only the injection check fires, it asks. Otherwise it allows. A recipient the user named exactly is not treated as an unexpected outside send. Option definitions are fixed in code, so attacker-controlled config cannot rewrite them. Secrets are redacted before anything is sent. If the endpoint fails, the result is **error**, never allow; a rule "ask" stays "ask" even if the model fails.
+When the broad question says block or any check scores 0.8 or higher, the model has **flagged** the action. From the command line and the Claude Code hook, a flag from the model alone **asks** a person by default; it blocks only when a rule also fired, or when you set `"model_blocks": true`. If only the injection check fires, it asks. Otherwise it allows. A recipient the user named exactly is not treated as an unexpected outside send. Option definitions are fixed in code, so attacker-controlled config cannot rewrite them. Secrets are redacted before anything is sent. If the endpoint fails, the result is **error**, never allow; a rule "ask" stays "ask" even if the model fails. Each model check has a time limit (15 seconds by default, retries included), and running out of time is also an error. In the Claude Code hook's enforce mode, **any problem inside VexorGate asks you**: a damaged session file, a broken config, an unexpected input or a busy lock never lets the action through silently.
 
 The gate only reads the user's own request and the raw tool call (plus, optionally, the tool output the agent read, labeled as untrusted). It never reads the agent's reasoning: a checker that reads the agent's reasoning ends up grading persuasion, not the call.
 
@@ -261,7 +261,7 @@ vexorgate/
 └── private/             # your held-out sets (git-ignored)
 ```
 
-Run the tests with `python -m unittest discover -s tests` (133 tests, no network needed).
+Run the tests with `python -m unittest discover -s tests` (150 tests, no network needed).
 
 ## Contributing
 

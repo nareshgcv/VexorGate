@@ -67,16 +67,24 @@ class SystemOneClient:
     times, waiting 1, 2, 4 ... seconds (or the server's Retry-After, capped at 30 s). Any other
     HTTP error is raised at once with the server's message, so a retired model or a bad key is
     visible instead of a bare "404 Not Found".
+
+    `deadline` caps the whole check, retries and waits included (15 s by default). The Claude Code
+    hook must answer before its own time limit, or Claude Code may run the tool without an answer.
     """
 
-    def __init__(self, url, key="", model="", timeout=8, retries=3, backoff=1.0):
+    def __init__(self, url, key="", model="", timeout=8, retries=3, backoff=1.0, deadline=15.0):
         self.url, self.key, self.model, self.timeout = url, key.strip(), model, timeout
         self.retries, self.backoff = max(0, int(retries)), float(backoff)
+        self.deadline = float(deadline) if deadline else None
+        self._attempt_timeout = timeout
 
     def _post(self, data, headers):
         req = urllib.request.Request(self.url, data=data, headers=headers)
-        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+        with urllib.request.urlopen(req, timeout=self._attempt_timeout) as r:
             return json.load(r)
+
+    def _left(self, start):
+        return None if self.deadline is None else self.deadline - (time.monotonic() - start)
 
     def decide(self, state, questions):
         body = {"state": state, "questions": questions}
@@ -86,12 +94,22 @@ class SystemOneClient:
         if self.key:
             headers["Authorization"] = f"Bearer {self.key}"
         data = json.dumps(body).encode()
+        start = time.monotonic()
         for attempt in range(self.retries + 1):
+            left = self._left(start)
+            if left is not None and left <= 0.5:
+                raise EndpointError(f"no answer within the time limit of {self.deadline:g} s")
+            self._attempt_timeout = self.timeout if left is None else max(0.5, min(self.timeout, left))
             try:
                 return self._post(data, headers)
             except urllib.error.HTTPError as e:
                 if e.code in RETRY_STATUS and attempt < self.retries:
-                    time.sleep(_wait(e, attempt, self.backoff))
+                    wait = _wait(e, attempt, self.backoff)
+                    left = self._left(start)
+                    if left is not None and wait > left - 1.0:
+                        raise EndpointError(f"HTTP {e.code}, and waiting to retry would pass the time limit of "
+                                            f"{self.deadline:g} s") from None
+                    time.sleep(wait)
                     continue
                 raise EndpointError(f"HTTP {e.code}: {_server_message(e)}") from None
 
@@ -293,7 +311,7 @@ def gate_from_config(cfg, ledger_state=None):
     no_model = cfg.get("rules_only") or needs_key(cfg)
     client = None if no_model else SystemOneClient(
         cfg["url"], cfg.get("key", ""), cfg.get("model", ""), int(cfg.get("timeout", 8)),
-        int(cfg.get("retries", 3)))
+        int(cfg.get("retries", 3)), deadline=float(cfg.get("deadline", 15) or 0) or None)
     g = Gate(client, cfg.get("org", ""), cfg.get("policy"), bool(cfg.get("rules", True)), ledger_state,
              model_blocks=bool(cfg.get("model_blocks", False)))
     if no_model and not cfg.get("rules_only"):

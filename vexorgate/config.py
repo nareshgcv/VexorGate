@@ -11,6 +11,7 @@ DEFAULTS = {
     "mode": "shadow",            # shadow: log only, never interfere. enforce: answer ask/deny.
     "timeout": 8,
     "retries": 3,                # retries on rate limits (429) and temporary server errors
+    "deadline": 15,              # seconds for a whole check, retries included; keep it below the hook timeout
     "skip_tools": ["Read", "Glob", "Grep", "LS", "TodoWrite"],
     "rules": True,               # hard-fact rules first (vexorgate.facts)
     "rules_only": False,         # true: no model at all, nothing leaves the machine

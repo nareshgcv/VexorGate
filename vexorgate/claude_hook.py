@@ -7,11 +7,21 @@ Register it for UserPromptSubmit and PreToolUse, and optionally PostToolUse (see
                     call is released and a corrected retry is not counted twice.
 In shadow mode (default) it never interferes. In enforce mode it answers
 "deny" for block and "ask" for ask or error, so the user decides.
-The hook always exits 0 and never raises, so a failure cannot break Claude Code.
+
+It fails closed: in enforce mode, any problem inside the hook (a damaged session file, a broken
+config, an unexpected input, a lock it cannot get) answers "ask", never silence, because Claude
+Code runs a tool when its hook gives no answer. The hook always exits 0 and never raises.
+
+Session files and logs are private to the user (folder 0700, files 0600 where the system allows),
+prompts are redacted before they are stored, files are written atomically, and a per-session lock
+keeps parallel tool calls from losing each other's counts.
 """
+import contextlib
 import json
+import os
 import re
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -21,35 +31,111 @@ from .gate import describe_action, gate_from_config
 from .redact import redact
 
 
+LOCK_WAIT = 10.0    # seconds to wait for another hook working on the same session
+
+
+def _private_dir(path):
+    path.mkdir(parents=True, exist_ok=True)
+    for d in (config.home(), path):
+        try:
+            os.chmod(d, 0o700)
+        except OSError:
+            pass
+    return path
+
+
+def _write_private(path, text):
+    """Write atomically (temporary file, then rename) with owner-only permissions."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
 def _session_file(session_id):
     safe = re.sub(r"[^A-Za-z0-9_\-]", "_", session_id or "unknown")[:80]
-    d = config.home() / "sessions"
-    d.mkdir(parents=True, exist_ok=True)
-    return d / f"{safe}.json"
+    return _private_dir(config.home() / "sessions") / f"{safe}.json"
+
+
+@contextlib.contextmanager
+def _session_lock(session_id, wait=None):
+    """One hook at a time per session. Raises TimeoutError if the lock is not free in time."""
+    path = _session_file(session_id).with_suffix(".lock")
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    deadline = time.monotonic() + (LOCK_WAIT if wait is None else wait)
+    try:
+        try:
+            import fcntl
+
+            def take():
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def free():
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        except ImportError:                       # Windows
+            import msvcrt
+
+            def take():
+                os.lseek(fd, 0, 0)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+
+            def free():
+                os.lseek(fd, 0, 0)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        while True:
+            try:
+                take()
+                break
+            except OSError:
+                if time.monotonic() > deadline:
+                    raise TimeoutError("another VexorGate hook kept this session busy") from None
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            free()
+    finally:
+        os.close(fd)
 
 
 def _load_session(session_id):
+    """The saved session, or {} if there is none. A damaged file is set aside and reported
+    with "_damaged", so earlier counts are known to be lost."""
     f = _session_file(session_id)
-    return json.loads(f.read_text()) if f.exists() else {}
+    if not f.exists():
+        return {}
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("not an object")
+        return data
+    except (ValueError, OSError):
+        with contextlib.suppress(OSError):
+            os.replace(f, f.with_name(f"{f.stem}.damaged-{int(time.time())}.json"))
+        return {"_damaged": True}
 
 
 def _save_session(session_id, data):
-    _session_file(session_id).write_text(json.dumps(data))
+    data = {k: v for k, v in data.items() if not k.startswith("_")}
+    _write_private(_session_file(session_id), json.dumps(data))
 
 
 def remember_prompt(session_id, prompt):
-    data = _load_session(session_id)
-    data["prompts"] = (data.get("prompts", []) + [prompt])[-5:]
-    _save_session(session_id, data)
+    with _session_lock(session_id):
+        data = _load_session(session_id)
+        data["prompts"] = (data.get("prompts", []) + [redact(prompt)])[-5:]
+        _save_session(session_id, data)
 
 
 def last_prompt(session_id):
-    f = _session_file(session_id)
-    if f.exists():
-        prompts = json.loads(f.read_text()).get("prompts", [])
-        if prompts:
-            return prompts[-1]
-    return None
+    prompts = _load_session(session_id).get("prompts") or []
+    return prompts[-1] if prompts else None
 
 
 def prompt_from_transcript(path):
@@ -79,14 +165,14 @@ def prompt_from_transcript(path):
 
 
 def log(record):
-    d = config.home() / "logs"
-    d.mkdir(parents=True, exist_ok=True)
+    d = _private_dir(config.home() / "logs")
     day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    with open(d / f"{day}.jsonl", "a", encoding="utf-8") as f:
+    fd = os.open(d / f"{day}.jsonl", os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def enforce_output(decision, reasons, gap="", receipt=""):
+def enforce_output(decision, reasons, gap="", receipt="", detail=""):
     exact = f" Exact action: {receipt}" if receipt else ""
     if decision == "block":
         permission = "deny"
@@ -96,7 +182,7 @@ def enforce_output(decision, reasons, gap="", receipt=""):
         why = "VexorGate wants confirmation: " + (gap or ", ".join(reasons)) + exact
     else:  # error
         permission = "ask"
-        why = "VexorGate could not check this action, please confirm"
+        why = "VexorGate could not check this action" + (f" ({detail})" if detail else "") + ", please confirm"
     return {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                    "permissionDecision": permission,
                                    "permissionDecisionReason": why}}
@@ -124,11 +210,12 @@ def handle(data, gate=None, cfg=None):
         return None
 
     if event in ("PostToolUse", "PostToolUseFailure"):
-        data_ = _load_session(session)
-        if "ledger" in data_:
-            failed = event == "PostToolUseFailure" or _looks_failed(data.get("tool_response"))
-            Ledger(data_["ledger"]).settle(session, "failed" if failed else "ok")
-            _save_session(session, data_)
+        with _session_lock(session):
+            data_ = _load_session(session)
+            if "ledger" in data_:
+                failed = event == "PostToolUseFailure" or _looks_failed(data.get("tool_response"))
+                Ledger(data_["ledger"]).settle(session, "failed" if failed else "ok")
+                _save_session(session, data_)
         return None
 
     if event != "PreToolUse":
@@ -144,15 +231,24 @@ def handle(data, gate=None, cfg=None):
         log(record)
         return None
 
-    request = last_prompt(session) or prompt_from_transcript(data.get("transcript_path")) or "(unknown request)"
-    session_data = _load_session(session)
-    ledger = session_data.setdefault("ledger", {})
-    if gate is None:
-        gate = gate_from_config(cfg, ledger)
-    else:
-        gate.ledger.state = ledger
-    v = gate.check(request, tool, tool_input, session=session)
-    _save_session(session, session_data)
+    with _session_lock(session):
+        session_data = _load_session(session)
+        damaged = session_data.pop("_damaged", False)
+        prompts = session_data.get("prompts") or []
+        transcript = prompt_from_transcript(data.get("transcript_path")) if not prompts else None
+        request = prompts[-1] if prompts else (redact(transcript) if transcript else "(unknown request)")
+        ledger = session_data.setdefault("ledger", {})
+        if gate is None:
+            gate = gate_from_config(cfg, ledger)
+        else:
+            gate.ledger.state = ledger
+        v = gate.check(request, tool, tool_input, session=session)
+        _save_session(session, session_data)
+    if damaged and v.decision in ("allow", "ask"):
+        v.decision = "ask"
+        v.reasons = ["session_damaged"] + list(v.reasons)
+        v.gap = ("VexorGate's saved session was damaged, so earlier counts in this session were lost. "
+                 + (v.gap or "")).strip()
     record.update({
         "request": redact(request)[:300],
         "action": redact(describe_action(tool, tool_input))[:500],
@@ -170,17 +266,37 @@ def handle(data, gate=None, cfg=None):
     return None
 
 
+def _enforcing():
+    """Whether enforce mode is on, even when the config file cannot be read."""
+    try:
+        return config.load().get("mode") == "enforce"
+    except Exception:
+        pass
+    if (os.environ.get("VEXORGATE_MODE") or "").strip().lower() == "enforce":
+        return True
+    try:
+        raw = (config.home() / "config.json").read_text(encoding="utf-8", errors="replace")
+        return bool(re.search(r'"mode"\s*:\s*"enforce"', raw))
+    except OSError:
+        return False
+
+
 def main():
+    data = None
     try:
         data = json.load(sys.stdin)
         out = handle(data)
         if out:
             print(json.dumps(out))
     except Exception as e:
-        try:
-            log({"ts": time.time(), "decision": "hook_error", "error": f"{type(e).__name__}: {str(e)[:200]}"})
-        except Exception:
-            pass
+        error = f"{type(e).__name__}: {str(e)[:200]}"
+        with contextlib.suppress(Exception):
+            log({"ts": time.time(), "decision": "hook_error", "error": error})
+        # fail closed: Claude Code runs the tool when the hook gives no answer
+        event = data.get("hook_event_name") if isinstance(data, dict) else None
+        with contextlib.suppress(Exception):
+            if event in (None, "PreToolUse") and _enforcing():
+                print(json.dumps(enforce_output("error", [], detail=f"internal error: {type(e).__name__}")))
     return 0
 
 
